@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [ "*" ]
+  pull_request:
+    branches: [ "*" ]
+
+jobs:
+  test:
+    name: Test and Lint
+    runs-on: macos-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
+      - name: Install LLVM 17
+        run: |
+          brew install llvm@17
+
+      - name: Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Run cargo fmt
+        run: cargo fmt --check
+
+      - name: Run cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo test

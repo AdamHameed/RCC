@@ -1,6 +1,7 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Token {
     Int,
+    Void,
     Return,
     Identifier(String),
     Plus,
@@ -93,6 +94,7 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, String> {
 
                 let token = match ident.as_str() {
                     "int" => Token::Int,
+                    "void" => Token::Void,
                     "return" => Token::Return,
                     _ => Token::Identifier(ident),
                 };
@@ -183,6 +185,27 @@ mod tests {
                 Token::Plus,
                 Token::Integer(1),
                 Token::RightParen,
+                Token::Semicolon,
+                Token::RightBrace,
+            ]
+        );
+    }
+
+    #[test]
+    fn tokenizes_void_keyword() {
+        let source = "int main(void) { return 0; }";
+        let tokens = tokenize(source).expect("should succeed");
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Int,
+                Token::Identifier("main".to_string()),
+                Token::LeftParen,
+                Token::Void,
+                Token::RightParen,
+                Token::LeftBrace,
+                Token::Return,
+                Token::Integer(0),
                 Token::Semicolon,
                 Token::RightBrace,
             ]

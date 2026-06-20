@@ -1,7 +1,10 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+static TEST_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 const COMPILER_BIN: &str = env!("CARGO_BIN_EXE_compiler");
 
@@ -28,6 +31,62 @@ fn respects_operator_precedence() {
 #[test]
 fn evaluates_division_and_subtraction() {
     assert_program_exit_code("int main() { return 20 / 5 - 1; }\n", 3);
+}
+
+#[test]
+fn evaluates_unary_negation() {
+    // -5 modulo 256 is 251
+    assert_program_exit_code("int main() { return -5; }\n", 251);
+}
+
+#[test]
+fn evaluates_unary_expression_with_spaces() {
+    assert_program_exit_code("int main() { return - -5; }\n", 5);
+}
+
+#[test]
+fn evaluates_void_parameter() {
+    assert_program_exit_code("int main(void) { return 42; }\n", 42);
+}
+
+#[test]
+fn rejects_non_main_function() {
+    let test_dir = make_test_dir();
+    let input_path = test_dir.join("input.c");
+    fs::write(&input_path, "int foo() { return 5; }\n").expect("should write input");
+    let compile_output = Command::new(COMPILER_BIN)
+        .arg(&input_path)
+        .current_dir(&test_dir)
+        .output()
+        .expect("should invoke compiler");
+    assert!(!compile_output.status.success());
+    let stderr = String::from_utf8_lossy(&compile_output.stderr);
+    assert!(stderr.contains("expected function name to be 'main'"));
+}
+
+#[test]
+fn evaluates_nested_unary_expression() {
+    assert_program_exit_code("int main() { return - - -5; }\n", 251);
+}
+
+#[test]
+fn evaluates_unary_precedence() {
+    assert_program_exit_code("int main() { return -2 * -3; }\n", 6);
+}
+
+#[test]
+fn rejects_invalid_parameters() {
+    let test_dir = make_test_dir();
+    let input_path = test_dir.join("input.c");
+    fs::write(&input_path, "int main(int x) { return 0; }\n").expect("should write input");
+    let compile_output = Command::new(COMPILER_BIN)
+        .arg(&input_path)
+        .current_dir(&test_dir)
+        .output()
+        .expect("should invoke compiler");
+    assert!(!compile_output.status.success());
+    let stderr = String::from_utf8_lossy(&compile_output.stderr);
+    assert!(stderr.contains("expected `)` or `void`"));
 }
 
 fn assert_program_exit_code(source: &str, expected_exit_code: i32) {
@@ -72,12 +131,13 @@ fn assert_program_exit_code(source: &str, expected_exit_code: i32) {
 }
 
 fn make_test_dir() -> PathBuf {
+    let unique_id = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system time should be after unix epoch")
         .as_nanos();
 
-    let test_dir = std::env::temp_dir().join(format!("rcc-e2e-{unique}"));
+    let test_dir = std::env::temp_dir().join(format!("rcc-e2e-{unique}-{unique_id}"));
     create_dir(&test_dir);
     test_dir
 }

@@ -1,4 +1,4 @@
-use crate::ast::{BinaryOp, Expr, Program, Statement};
+use crate::ast::{BinaryOp, Expr, Program, Statement, UnaryOp};
 use inkwell::OptimizationLevel;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
@@ -62,6 +62,15 @@ fn emit_expr<'ctx>(
         Expr::IntegerLiteral(integer) => {
             Ok(context.i32_type().const_int(integer.value as u64, true))
         }
+        Expr::Unary(unary) => {
+            let operand = emit_expr(context, builder, &unary.expr)?;
+            match unary.operator {
+                UnaryOp::Negate => builder
+                    .build_int_neg(operand, "negtmp")
+                    .map_err(|err| format!("failed to emit neg instruction: {err}")),
+                UnaryOp::Posate => Ok(operand),
+            }
+        }
         Expr::Binary(binary) => {
             let left = emit_expr(context, builder, &binary.left)?;
             let right = emit_expr(context, builder, &binary.right)?;
@@ -89,6 +98,7 @@ mod tests {
     use super::generate_ir;
     use crate::ast::{
         BinaryExpr, BinaryOp, Expr, Function, IntegerLiteral, Program, ReturnStatement, Statement,
+        UnaryExpr, UnaryOp,
     };
 
     #[test]
@@ -131,5 +141,25 @@ mod tests {
 
         assert!(ir.contains("define i32 @main()"));
         assert!(ir.contains("ret i32 12"));
+    }
+
+    #[test]
+    fn generates_llvm_ir_for_unary_negation() {
+        let program = Program {
+            function: Function {
+                name: "main".to_string(),
+                body: vec![Statement::Return(ReturnStatement {
+                    expr: Expr::Unary(UnaryExpr {
+                        operator: UnaryOp::Negate,
+                        expr: Box::new(Expr::IntegerLiteral(IntegerLiteral { value: 5 })),
+                    }),
+                })],
+            },
+        };
+
+        let ir = generate_ir(&program).expect("should generate LLVM IR");
+
+        assert!(ir.contains("define i32 @main()"));
+        assert!(ir.contains("ret i32 -5"));
     }
 }

@@ -8,9 +8,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{self, Command};
 
-const IR_OUTPUT: &str = "output.ll";
-const EXECUTABLE_OUTPUT: &str = "output";
-
 fn main() {
     if let Err(error) = run() {
         eprintln!("error: {error}");
@@ -19,11 +16,28 @@ fn main() {
 }
 
 fn run() -> Result<(), String> {
-    let mut args = env::args();
-    let program = args.next().unwrap_or_else(|| "compiler".to_string());
-    let input_path = args
-        .next()
-        .ok_or_else(|| format!("usage: {program} <input.c>"))?;
+    let mut args = env::args().skip(1);
+    let mut input_path: Option<String> = None;
+    let mut output_path: Option<String> = None;
+
+    while let Some(arg) = args.next() {
+        if arg == "-o" {
+            output_path = Some(
+                args.next()
+                    .ok_or_else(|| "-o option requires an output file path".to_string())?,
+            );
+        } else if arg.starts_with('-') {
+            return Err(format!("unknown option: {arg}"));
+        } else {
+            if input_path.is_some() {
+                return Err("multiple input files are not supported".to_string());
+            }
+            input_path = Some(arg);
+        }
+    }
+
+    let input_path =
+        input_path.ok_or_else(|| "usage: compiler <input.c> [-o <output>]".to_string())?;
 
     if !input_path.ends_with(".c") {
         return Err(format!("expected a .c input file, received: {input_path}"));
@@ -37,22 +51,37 @@ fn run() -> Result<(), String> {
     let tokens = lexer::tokenize(&source)?;
     log_step("parsing tokens");
     let program = parser::parse(&tokens).map_err(|err| err.to_string())?;
+
+    // Validate that the defined function is named "main"
+    if program.function.name != "main" {
+        return Err(format!(
+            "expected function name to be 'main', found '{}' (rcc only supports compiling programs with a 'main' entrypoint)",
+            program.function.name
+        ));
+    }
+
     log_step("generating LLVM IR");
     let ir = codegen::generate_ir(&program)?;
 
-    let ir_path = PathBuf::from(IR_OUTPUT);
+    // Determine output paths dynamically
+    let executable_path = PathBuf::from(output_path.unwrap_or_else(|| "output".to_string()));
+    let ir_path = if let Some(ext) = executable_path.extension() {
+        executable_path.with_extension(format!("{}.ll", ext.to_string_lossy()))
+    } else {
+        executable_path.with_extension("ll")
+    };
+
     log_step(&format!("writing LLVM IR to {}", ir_path.display()));
     fs::write(&ir_path, ir)
         .map_err(|err| format!("failed to write {}: {err}", ir_path.display()))?;
 
-    let executable_path = PathBuf::from(EXECUTABLE_OUTPUT);
     let compiler = find_system_compiler()?;
     log_step(&format!(
         "compiling LLVM IR with {} -> {}",
         compiler,
         executable_path.display()
     ));
-    compile_ir(&compiler, &ir_path, &executable_path)?;
+    compile_ir(compiler, &ir_path, &executable_path)?;
 
     log_step(&format!("build complete: {}", executable_path.display()));
 
