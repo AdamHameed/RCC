@@ -1,11 +1,19 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Program {
-    pub function: Function,
+    pub functions: Vec<Function>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Parameter {
+    pub name: String,
+    pub ty: Type,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Function {
     pub name: String,
+    pub return_type: Type,
+    pub params: Vec<Parameter>,
     pub body: Vec<Statement>,
 }
 
@@ -71,6 +79,13 @@ pub enum Expr {
     Variable(VariableExpr),
     Unary(UnaryExpr),
     Binary(BinaryExpr),
+    Call(FunctionCallExpr),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FunctionCallExpr {
+    pub name: String,
+    pub args: Vec<Expr>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

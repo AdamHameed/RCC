@@ -1,7 +1,8 @@
 use crate::ast::{BinaryExpr, BinaryOp, UnaryExpr, UnaryOp};
 use crate::ast::{
-    Expr, Function, IntegerLiteral, Program, ReturnStatement, Statement, VarAssignStatement,
-    VarDeclareStatement, VariableExpr, Type, IfStatement, WhileStatement, ForStatement,
+    Expr, ForStatement, Function, FunctionCallExpr, IfStatement, IntegerLiteral, Parameter,
+    Program, ReturnStatement, Statement, Type, VarAssignStatement, VarDeclareStatement,
+    VariableExpr, WhileStatement,
 };
 use crate::lexer::Token;
 
@@ -11,9 +12,8 @@ pub enum ParseError {
         expected: &'static str,
         found: Option<Token>,
     },
-    TrailingTokens {
-        found: Token,
-    },
+    #[allow(dead_code)]
+    TrailingTokens { found: Token },
 }
 
 impl std::fmt::Display for ParseError {
@@ -50,15 +50,11 @@ impl<'a> Parser<'a> {
     }
 
     pub fn parse_program(&mut self) -> Result<Program, ParseError> {
-        let function = self.parse_function()?;
-
-        if let Some(found) = self.peek() {
-            return Err(ParseError::TrailingTokens {
-                found: found.clone(),
-            });
+        let mut functions = Vec::new();
+        while self.peek().is_some() {
+            functions.push(self.parse_function()?);
         }
-
-        Ok(Program { function })
+        Ok(Program { functions })
     }
 
     fn parse_type(&mut self) -> Result<Type, ParseError> {
@@ -72,23 +68,37 @@ impl<'a> Parser<'a> {
     }
 
     pub fn parse_function(&mut self) -> Result<Function, ParseError> {
-        self.parse_type()?;
+        let return_type = self.parse_type()?;
         let name = self.parse_identifier()?;
         self.expect_left_paren()?;
 
-        match self.peek() {
-            Some(Token::Void) => {
-                self.next();
-                self.expect_right_paren()?;
-            }
-            Some(Token::RightParen) => {
-                self.next();
-            }
-            other => {
-                return Err(ParseError::UnexpectedToken {
-                    expected: "`)` or `void`",
-                    found: other.cloned(),
-                });
+        let mut params = Vec::new();
+        if self.peek() == Some(&Token::Void) {
+            self.next();
+            self.expect_right_paren()?;
+        } else if self.peek() == Some(&Token::RightParen) {
+            self.next();
+        } else {
+            loop {
+                let ty = self.parse_type()?;
+                let p_name = self.parse_identifier()?;
+                params.push(Parameter { name: p_name, ty });
+
+                match self.peek() {
+                    Some(Token::Comma) => {
+                        self.next();
+                    }
+                    Some(Token::RightParen) => {
+                        self.next();
+                        break;
+                    }
+                    other => {
+                        return Err(ParseError::UnexpectedToken {
+                            expected: "`,` or `)`",
+                            found: other.cloned(),
+                        });
+                    }
+                }
             }
         }
 
@@ -99,7 +109,12 @@ impl<'a> Parser<'a> {
         }
         self.expect_right_brace()?;
 
-        Ok(Function { name, body })
+        Ok(Function {
+            name,
+            return_type,
+            params,
+            body,
+        })
     }
 
     pub fn parse_statement(&mut self) -> Result<Statement, ParseError> {
@@ -177,7 +192,10 @@ impl<'a> Parser<'a> {
                     let target = self.parse_unary()?;
                     self.expect_token(Token::Equals, "`=`")?;
                     let expr = self.parse_expression()?;
-                    Some(Box::new(Statement::Assign(VarAssignStatement { target, expr })))
+                    Some(Box::new(Statement::Assign(VarAssignStatement {
+                        target,
+                        expr,
+                    })))
                 };
                 self.expect_right_paren()?;
                 let body = self.parse_statement()?;
@@ -387,7 +405,35 @@ impl<'a> Parser<'a> {
             Some(Token::Integer(_)) => self.parse_integer_literal(),
             Some(Token::Identifier(_)) => {
                 let name = self.parse_identifier()?;
-                Ok(Expr::Variable(VariableExpr { name }))
+                if self.peek() == Some(&Token::LeftParen) {
+                    self.next();
+                    let mut args = Vec::new();
+                    if self.peek() == Some(&Token::RightParen) {
+                        self.next();
+                    } else {
+                        loop {
+                            args.push(self.parse_expression()?);
+                            match self.peek() {
+                                Some(Token::Comma) => {
+                                    self.next();
+                                }
+                                Some(Token::RightParen) => {
+                                    self.next();
+                                    break;
+                                }
+                                other => {
+                                    return Err(ParseError::UnexpectedToken {
+                                        expected: "`,` or `)`",
+                                        found: other.cloned(),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    Ok(Expr::Call(FunctionCallExpr { name, args }))
+                } else {
+                    Ok(Expr::Variable(VariableExpr { name }))
+                }
             }
             Some(Token::LeftParen) => {
                 self.expect_left_paren()?;
@@ -476,8 +522,9 @@ impl<'a> Parser<'a> {
 mod tests {
     use super::{ParseError, Parser, parse};
     use crate::ast::{
-        BinaryExpr, BinaryOp, Expr, Function, IntegerLiteral, Program, ReturnStatement, Statement,
-        UnaryExpr, UnaryOp, VarAssignStatement, VarDeclareStatement, VariableExpr, Type,
+        BinaryExpr, BinaryOp, Expr, Function, FunctionCallExpr, IntegerLiteral, Parameter, Program,
+        ReturnStatement, Statement, Type, UnaryExpr, UnaryOp, VarAssignStatement,
+        VarDeclareStatement, VariableExpr,
     };
     use crate::lexer::Token;
 
@@ -500,12 +547,14 @@ mod tests {
         assert_eq!(
             program,
             Program {
-                function: Function {
+                functions: vec![Function {
                     name: "main".to_string(),
+                    return_type: Type::Int,
+                    params: vec![],
                     body: vec![Statement::Return(ReturnStatement {
                         expr: Expr::IntegerLiteral(IntegerLiteral { value: 5 }),
                     })],
-                },
+                }],
             }
         );
     }
@@ -533,6 +582,8 @@ mod tests {
             function,
             Function {
                 name: "main".to_string(),
+                return_type: Type::Int,
+                params: vec![],
                 body: vec![Statement::Return(ReturnStatement {
                     expr: Expr::IntegerLiteral(IntegerLiteral { value: 42 }),
                 })],
@@ -583,7 +634,7 @@ mod tests {
         let program = parse(&tokens).expect("parser should accept addition");
 
         assert_eq!(
-            program.function.body,
+            program.functions[0].body,
             vec![Statement::Return(ReturnStatement {
                 expr: Expr::Binary(BinaryExpr {
                     left: Box::new(Expr::IntegerLiteral(IntegerLiteral { value: 2 })),
@@ -617,7 +668,7 @@ mod tests {
         let program = parse(&tokens).expect("parser should accept grouped multiplication");
 
         assert_eq!(
-            program.function.body,
+            program.functions[0].body,
             vec![Statement::Return(ReturnStatement {
                 expr: Expr::Binary(BinaryExpr {
                     left: Box::new(Expr::IntegerLiteral(IntegerLiteral { value: 4 })),
@@ -651,7 +702,7 @@ mod tests {
         let program = parse(&tokens).expect("parser should accept unary ops");
 
         assert_eq!(
-            program.function.body,
+            program.functions[0].body,
             vec![Statement::Return(ReturnStatement {
                 expr: Expr::Unary(UnaryExpr {
                     operator: UnaryOp::Negate,
@@ -681,7 +732,7 @@ mod tests {
 
         let program = parse(&tokens).expect("parser should accept void parameter");
 
-        assert_eq!(program.function.name, "main".to_string());
+        assert_eq!(program.functions[0].name, "main".to_string());
     }
 
     #[test]
@@ -713,7 +764,7 @@ mod tests {
             parse(&tokens).expect("parser should accept variables and multiple statements");
 
         assert_eq!(
-            program.function.body,
+            program.functions[0].body,
             vec![
                 Statement::Declare(VarDeclareStatement {
                     name: "x".to_string(),
@@ -763,7 +814,7 @@ mod tests {
         let program = parse(&tokens).expect("should parse logic ops");
 
         assert_eq!(
-            program.function.body,
+            program.functions[0].body,
             vec![Statement::Return(ReturnStatement {
                 expr: Expr::Binary(BinaryExpr {
                     left: Box::new(Expr::Binary(BinaryExpr {
@@ -778,6 +829,80 @@ mod tests {
                     })),
                 }),
             })]
+        );
+    }
+
+    #[test]
+    fn parses_multiple_functions_with_parameters() {
+        let tokens = vec![
+            // int add(int a, int b) { return a + b; }
+            Token::Int,
+            Token::Identifier("add".to_string()),
+            Token::LeftParen,
+            Token::Int,
+            Token::Identifier("a".to_string()),
+            Token::Comma,
+            Token::Int,
+            Token::Identifier("b".to_string()),
+            Token::RightParen,
+            Token::LeftBrace,
+            Token::Return,
+            Token::Identifier("a".to_string()),
+            Token::Plus,
+            Token::Identifier("b".to_string()),
+            Token::Semicolon,
+            Token::RightBrace,
+            // int main() { return add(2, 3); }
+            Token::Int,
+            Token::Identifier("main".to_string()),
+            Token::LeftParen,
+            Token::RightParen,
+            Token::LeftBrace,
+            Token::Return,
+            Token::Identifier("add".to_string()),
+            Token::LeftParen,
+            Token::Integer(2),
+            Token::Comma,
+            Token::Integer(3),
+            Token::RightParen,
+            Token::Semicolon,
+            Token::RightBrace,
+        ];
+
+        let program = parse(&tokens).expect("should parse multiple functions with params");
+
+        assert_eq!(program.functions.len(), 2);
+
+        // check first function
+        assert_eq!(program.functions[0].name, "add".to_string());
+        assert_eq!(program.functions[0].return_type, Type::Int);
+        assert_eq!(
+            program.functions[0].params,
+            vec![
+                Parameter {
+                    name: "a".to_string(),
+                    ty: Type::Int
+                },
+                Parameter {
+                    name: "b".to_string(),
+                    ty: Type::Int
+                },
+            ]
+        );
+
+        // check second function
+        assert_eq!(program.functions[1].name, "main".to_string());
+        assert_eq!(
+            program.functions[1].body[0],
+            Statement::Return(ReturnStatement {
+                expr: Expr::Call(FunctionCallExpr {
+                    name: "add".to_string(),
+                    args: vec![
+                        Expr::IntegerLiteral(IntegerLiteral { value: 2 }),
+                        Expr::IntegerLiteral(IntegerLiteral { value: 3 }),
+                    ],
+                }),
+            })
         );
     }
 }

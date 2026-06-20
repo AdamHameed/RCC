@@ -1,9 +1,10 @@
-use crate::ast::{BinaryOp, Expr, Program, Statement, UnaryOp, Type};
+use crate::ast::{BinaryOp, Expr, Program, Statement, Type, UnaryOp};
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetMachine};
-use inkwell::values::{PointerValue, BasicValueEnum};
-use inkwell::{IntPredicate, OptimizationLevel, AddressSpace};
+use inkwell::types::BasicType;
+use inkwell::values::{BasicValueEnum, PointerValue};
+use inkwell::{AddressSpace, IntPredicate, OptimizationLevel};
 use std::collections::HashMap;
 
 pub fn generate_ir(program: &Program) -> Result<String, String> {
@@ -11,7 +12,7 @@ pub fn generate_ir(program: &Program) -> Result<String, String> {
         .map_err(|err| format!("failed to initialize LLVM target support: {err}"))?;
 
     let context = Context::create();
-    let module = context.create_module(&program.function.name);
+    let module = context.create_module("rcc_module");
     let builder = context.create_builder();
 
     let triple = TargetMachine::get_default_triple();
@@ -32,43 +33,120 @@ pub fn generate_ir(program: &Program) -> Result<String, String> {
     let data_layout = machine.get_target_data().get_data_layout();
     module.set_data_layout(&data_layout);
 
-    let i32_type = context.i32_type();
-    let function_type = i32_type.fn_type(&[], false);
-    let function = module.add_function(&program.function.name, function_type, None);
+    // Build the function types map to support type-checking calls
+    let mut function_types = HashMap::new();
+    for func in &program.functions {
+        function_types.insert(func.name.clone(), func.return_type.clone());
+    }
 
-    let entry = context.append_basic_block(function, "entry");
-    let return_bb = context.append_basic_block(function, "return");
+    // Step 1: Declare all functions in the LLVM module
+    let mut llvm_functions = HashMap::new();
+    for func in &program.functions {
+        let return_ty = llvm_type(&context, &func.return_type);
+        let param_types: Vec<_> = func
+            .params
+            .iter()
+            .map(|p| llvm_type(&context, &p.ty).into())
+            .collect();
+        let fn_type = return_ty.fn_type(&param_types, false);
+        let llvm_func = module.add_function(&func.name, fn_type, None);
+        llvm_functions.insert(func.name.clone(), llvm_func);
+    }
 
-    builder.position_at_end(entry);
+    // Step 2: Compile the body of each function
+    for func in &program.functions {
+        let llvm_func = llvm_functions
+            .get(&func.name)
+            .ok_or_else(|| format!("failed to find declared LLVM function '{}'", func.name))?;
 
-    let ret_val_ptr = builder
-        .build_alloca(i32_type, "retval")
-        .map_err(|err| format!("failed to build retval alloca: {err}"))?;
-    builder
-        .build_store(ret_val_ptr, i32_type.const_zero())
-        .map_err(|err| format!("failed to store initial retval: {err}"))?;
+        let entry = context.append_basic_block(*llvm_func, "entry");
+        let return_bb = context.append_basic_block(*llvm_func, "return");
 
-    let mut variables = vec![HashMap::new()];
+        builder.position_at_end(entry);
 
-    for statement in &program.function.body {
-        if builder.get_insert_block().and_then(|bb| bb.get_terminator()).is_some() {
-            break;
+        let return_ty = llvm_type(&context, &func.return_type);
+        let ret_val_ptr = builder
+            .build_alloca(return_ty, "retval")
+            .map_err(|err| format!("failed to build retval alloca: {err}"))?;
+
+        // Initialize return value to null/zero
+        let zero_val: BasicValueEnum = match func.return_type {
+            Type::Int => context.i32_type().const_zero().into(),
+            Type::Pointer(_) => context
+                .ptr_type(AddressSpace::default())
+                .const_null()
+                .into(),
+        };
+        builder
+            .build_store(ret_val_ptr, zero_val)
+            .map_err(|err| format!("failed to store initial retval: {err}"))?;
+
+        let mut variables = vec![HashMap::new()];
+
+        // Allocate parameters as local variables in the entry block
+        for (i, param) in func.params.iter().enumerate() {
+            let param_val = llvm_func
+                .get_nth_param(i as u32)
+                .ok_or_else(|| format!("parameter '{}' not found in LLVM function", param.name))?;
+            let llvm_ty = llvm_type(&context, &param.ty);
+            let alloca = builder.build_alloca(llvm_ty, &param.name).map_err(|err| {
+                format!(
+                    "failed to build alloca for parameter '{}': {err}",
+                    param.name
+                )
+            })?;
+            builder
+                .build_store(alloca, param_val)
+                .map_err(|err| format!("failed to store parameter '{}': {err}", param.name))?;
+            variables[0].insert(param.name.clone(), (param.ty.clone(), alloca));
         }
-        emit_statement(&context, &builder, statement, &mut variables, ret_val_ptr, return_bb)?;
-    }
 
-    if builder.get_insert_block().and_then(|bb| bb.get_terminator()).is_none() {
-        builder.build_unconditional_branch(return_bb).map_err(|err| err.to_string())?;
-    }
+        for statement in &func.body {
+            if builder
+                .get_insert_block()
+                .and_then(|bb| bb.get_terminator())
+                .is_some()
+            {
+                break;
+            }
+            emit_statement(
+                &context,
+                &builder,
+                statement,
+                &mut variables,
+                ret_val_ptr,
+                return_bb,
+                &function_types,
+                &module,
+            )?;
+        }
 
-    builder.position_at_end(return_bb);
-    let return_val = builder
-        .build_load(i32_type, ret_val_ptr, "retval")
-        .map_err(|err| format!("failed to load return value: {err}"))?
-        .into_int_value();
-    builder
-        .build_return(Some(&return_val))
-        .map_err(|err| format!("failed to build return instruction: {err}"))?;
+        if builder
+            .get_insert_block()
+            .and_then(|bb| bb.get_terminator())
+            .is_none()
+        {
+            builder
+                .build_unconditional_branch(return_bb)
+                .map_err(|err| err.to_string())?;
+        }
+
+        builder.position_at_end(return_bb);
+        let return_val = builder
+            .build_load(return_ty, ret_val_ptr, "retval")
+            .map_err(|err| format!("failed to load return value: {err}"))?;
+        builder
+            .build_return(Some(&return_val))
+            .map_err(|err| format!("failed to build return instruction: {err}"))?;
+
+        if !llvm_func.verify(true) {
+            // Note: verify returns true if the function is valid (not 1)
+            return Err(format!(
+                "LLVM verification failed for function '{}'",
+                func.name
+            ));
+        }
+    }
 
     if module.verify().is_err() {
         return Err("generated LLVM module did not verify".to_string());
@@ -77,15 +155,12 @@ pub fn generate_ir(program: &Program) -> Result<String, String> {
     Ok(module.print_to_string().to_string())
 }
 
-fn llvm_type<'ctx>(
-    context: &'ctx Context,
-    ty: &Type,
-) -> inkwell::types::BasicTypeEnum<'ctx> {
+fn llvm_type<'ctx>(context: &'ctx Context, ty: &Type) -> inkwell::types::BasicTypeEnum<'ctx> {
     match ty {
         Type::Int => inkwell::types::BasicTypeEnum::IntType(context.i32_type()),
-        Type::Pointer(_) => inkwell::types::BasicTypeEnum::PointerType(
-            context.ptr_type(AddressSpace::default()),
-        ),
+        Type::Pointer(_) => {
+            inkwell::types::BasicTypeEnum::PointerType(context.ptr_type(AddressSpace::default()))
+        }
     }
 }
 
@@ -104,6 +179,7 @@ fn lookup_variable<'a, 'ctx>(
 fn type_of_expr(
     expr: &Expr,
     variables: &[HashMap<String, (Type, PointerValue)>],
+    function_types: &HashMap<String, Type>,
 ) -> Result<Type, String> {
     match expr {
         Expr::IntegerLiteral(_) => Ok(Type::Int),
@@ -120,18 +196,24 @@ fn type_of_expr(
         Expr::Unary(unary) => match unary.operator {
             UnaryOp::Negate | UnaryOp::Posate | UnaryOp::LogicalNot => Ok(Type::Int),
             UnaryOp::Deref => {
-                let inner_ty = type_of_expr(&unary.expr, variables)?;
+                let inner_ty = type_of_expr(&unary.expr, variables, function_types)?;
                 match inner_ty {
                     Type::Pointer(boxed_ty) => Ok(*boxed_ty),
                     _ => Err("cannot dereference non-pointer type".to_string()),
                 }
             }
             UnaryOp::AddrOf => {
-                let inner_ty = type_of_expr(&unary.expr, variables)?;
+                let inner_ty = type_of_expr(&unary.expr, variables, function_types)?;
                 Ok(Type::Pointer(Box::new(inner_ty)))
             }
         },
         Expr::Binary(_) => Ok(Type::Int),
+        Expr::Call(call) => {
+            let ret_ty = function_types
+                .get(&call.name)
+                .ok_or_else(|| format!("undefined function '{}'", call.name))?;
+            Ok(ret_ty.clone())
+        }
     }
 }
 
@@ -140,6 +222,8 @@ fn emit_lvalue<'ctx>(
     builder: &Builder<'ctx>,
     expr: &Expr,
     variables: &[HashMap<String, (Type, PointerValue<'ctx>)>],
+    function_types: &HashMap<String, Type>,
+    module: &inkwell::module::Module<'ctx>,
 ) -> Result<PointerValue<'ctx>, String> {
     match expr {
         Expr::Variable(var) => {
@@ -148,7 +232,14 @@ fn emit_lvalue<'ctx>(
             Ok(*ptr)
         }
         Expr::Unary(unary) if unary.operator == UnaryOp::Deref => {
-            let val = emit_expr(context, builder, &unary.expr, variables)?;
+            let val = emit_expr(
+                context,
+                builder,
+                &unary.expr,
+                variables,
+                function_types,
+                module,
+            )?;
             match val {
                 BasicValueEnum::PointerValue(ptr) => Ok(ptr),
                 _ => Err("dereference target did not evaluate to a pointer".to_string()),
@@ -163,34 +254,41 @@ fn emit_expr<'ctx>(
     builder: &Builder<'ctx>,
     expr: &Expr,
     variables: &[HashMap<String, (Type, PointerValue<'ctx>)>],
+    function_types: &HashMap<String, Type>,
+    module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
     match expr {
-        Expr::IntegerLiteral(integer) => {
-            Ok(BasicValueEnum::IntValue(
-                context.i32_type().const_int(integer.value as u64, true),
-            ))
-        }
+        Expr::IntegerLiteral(integer) => Ok(BasicValueEnum::IntValue(
+            context.i32_type().const_int(integer.value as u64, true),
+        )),
         Expr::Variable(var) => {
             let (ty, ptr) = lookup_variable(&var.name, variables)
                 .ok_or_else(|| format!("undefined variable '{}'", var.name))?;
             let llvm_ty = llvm_type(context, ty);
-            builder
-                .build_load(llvm_ty, *ptr, &var.name)
-                .map_err(|err| {
-                    format!(
-                        "failed to build load instruction for variable '{}': {err}",
-                        var.name
-                    )
-                })
+            builder.build_load(llvm_ty, *ptr, &var.name).map_err(|err| {
+                format!(
+                    "failed to build load instruction for variable '{}': {err}",
+                    var.name
+                )
+            })
         }
         Expr::Unary(unary) => match unary.operator {
             UnaryOp::Deref => {
-                let val = emit_expr(context, builder, &unary.expr, variables)?;
+                let val = emit_expr(
+                    context,
+                    builder,
+                    &unary.expr,
+                    variables,
+                    function_types,
+                    module,
+                )?;
                 let ptr = match val {
                     BasicValueEnum::PointerValue(p) => p,
-                    _ => return Err("dereference operand did not evaluate to a pointer".to_string()),
+                    _ => {
+                        return Err("dereference operand did not evaluate to a pointer".to_string());
+                    }
                 };
-                let expr_ty = type_of_expr(&unary.expr, variables)?;
+                let expr_ty = type_of_expr(&unary.expr, variables, function_types)?;
                 let inner_ty = match expr_ty {
                     Type::Pointer(inner) => *inner,
                     _ => return Err("cannot dereference non-pointer type".to_string()),
@@ -201,11 +299,25 @@ fn emit_expr<'ctx>(
                     .map_err(|err| err.to_string())
             }
             UnaryOp::AddrOf => {
-                let ptr = emit_lvalue(context, builder, &unary.expr, variables)?;
+                let ptr = emit_lvalue(
+                    context,
+                    builder,
+                    &unary.expr,
+                    variables,
+                    function_types,
+                    module,
+                )?;
                 Ok(BasicValueEnum::PointerValue(ptr))
             }
             UnaryOp::Negate | UnaryOp::Posate | UnaryOp::LogicalNot => {
-                let operand = emit_expr(context, builder, &unary.expr, variables)?;
+                let operand = emit_expr(
+                    context,
+                    builder,
+                    &unary.expr,
+                    variables,
+                    function_types,
+                    module,
+                )?;
                 let operand_int = match operand {
                     BasicValueEnum::IntValue(i) => i,
                     _ => return Err("expected integer operand for unary operator".to_string()),
@@ -238,7 +350,14 @@ fn emit_expr<'ctx>(
             if is_logical_op {
                 match binary.operator {
                     BinaryOp::LogicalAnd => {
-                        let lhs_val = emit_expr(context, builder, &binary.left, variables)?;
+                        let lhs_val = emit_expr(
+                            context,
+                            builder,
+                            &binary.left,
+                            variables,
+                            function_types,
+                            module,
+                        )?;
                         let lhs_int = match lhs_val {
                             BasicValueEnum::IntValue(i) => i,
                             _ => return Err("expected integer for logical AND operand".to_string()),
@@ -264,7 +383,14 @@ fn emit_expr<'ctx>(
 
                         // RHS block
                         builder.position_at_end(rhs_bb);
-                        let rhs_val = emit_expr(context, builder, &binary.right, variables)?;
+                        let rhs_val = emit_expr(
+                            context,
+                            builder,
+                            &binary.right,
+                            variables,
+                            function_types,
+                            module,
+                        )?;
                         let rhs_int = match rhs_val {
                             BasicValueEnum::IntValue(i) => i,
                             _ => return Err("expected integer for logical AND operand".to_string()),
@@ -295,10 +421,19 @@ fn emit_expr<'ctx>(
                             (&context.i32_type().const_zero(), start_bb),
                             (&rhs_res, actual_rhs_bb),
                         ]);
-                        Ok(BasicValueEnum::IntValue(phi.as_basic_value().into_int_value()))
+                        Ok(BasicValueEnum::IntValue(
+                            phi.as_basic_value().into_int_value(),
+                        ))
                     }
                     BinaryOp::LogicalOr => {
-                        let lhs_val = emit_expr(context, builder, &binary.left, variables)?;
+                        let lhs_val = emit_expr(
+                            context,
+                            builder,
+                            &binary.left,
+                            variables,
+                            function_types,
+                            module,
+                        )?;
                         let lhs_int = match lhs_val {
                             BasicValueEnum::IntValue(i) => i,
                             _ => return Err("expected integer for logical OR operand".to_string()),
@@ -324,7 +459,14 @@ fn emit_expr<'ctx>(
 
                         // RHS block
                         builder.position_at_end(rhs_bb);
-                        let rhs_val = emit_expr(context, builder, &binary.right, variables)?;
+                        let rhs_val = emit_expr(
+                            context,
+                            builder,
+                            &binary.right,
+                            variables,
+                            function_types,
+                            module,
+                        )?;
                         let rhs_int = match rhs_val {
                             BasicValueEnum::IntValue(i) => i,
                             _ => return Err("expected integer for logical OR operand".to_string()),
@@ -355,13 +497,29 @@ fn emit_expr<'ctx>(
                             (&context.i32_type().const_int(1, false), start_bb),
                             (&rhs_res, actual_rhs_bb),
                         ]);
-                        Ok(BasicValueEnum::IntValue(phi.as_basic_value().into_int_value()))
+                        Ok(BasicValueEnum::IntValue(
+                            phi.as_basic_value().into_int_value(),
+                        ))
                     }
                     _ => unreachable!(),
                 }
             } else {
-                let left_val = emit_expr(context, builder, &binary.left, variables)?;
-                let right_val = emit_expr(context, builder, &binary.right, variables)?;
+                let left_val = emit_expr(
+                    context,
+                    builder,
+                    &binary.left,
+                    variables,
+                    function_types,
+                    module,
+                )?;
+                let right_val = emit_expr(
+                    context,
+                    builder,
+                    &binary.right,
+                    variables,
+                    function_types,
+                    module,
+                )?;
                 let left = match left_val {
                     BasicValueEnum::IntValue(i) => i,
                     _ => return Err("expected integer operand".to_string()),
@@ -411,9 +569,28 @@ fn emit_expr<'ctx>(
                 Ok(BasicValueEnum::IntValue(res))
             }
         }
+        Expr::Call(call) => {
+            let func = module
+                .get_function(&call.name)
+                .ok_or_else(|| format!("undefined function '{}'", call.name))?;
+            let mut arg_vals = Vec::new();
+            for arg in &call.args {
+                let val = emit_expr(context, builder, arg, variables, function_types, module)?;
+                arg_vals.push(val.into());
+            }
+            let call_site = builder
+                .build_call(func, &arg_vals, &call.name)
+                .map_err(|err| format!("failed to build call to '{}': {err}", call.name))?;
+            let call_val = match call_site.try_as_basic_value() {
+                inkwell::values::ValueKind::Basic(val) => val,
+                _ => return Err(format!("function '{}' did not return a value", call.name)),
+            };
+            Ok(call_val)
+        }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_statement<'ctx>(
     context: &'ctx Context,
     builder: &Builder<'ctx>,
@@ -421,10 +598,19 @@ fn emit_statement<'ctx>(
     variables: &mut Vec<HashMap<String, (Type, PointerValue<'ctx>)>>,
     ret_val_ptr: PointerValue<'ctx>,
     return_bb: inkwell::basic_block::BasicBlock<'ctx>,
+    function_types: &HashMap<String, Type>,
+    module: &inkwell::module::Module<'ctx>,
 ) -> Result<(), String> {
     match statement {
         Statement::Declare(decl) => {
-            let init_val = emit_expr(context, builder, &decl.init, variables)?;
+            let init_val = emit_expr(
+                context,
+                builder,
+                &decl.init,
+                variables,
+                function_types,
+                module,
+            )?;
             let llvm_ty = llvm_type(context, &decl.ty);
             let alloca = builder
                 .build_alloca(llvm_ty, &decl.name)
@@ -437,14 +623,35 @@ fn emit_statement<'ctx>(
             }
         }
         Statement::Assign(assign) => {
-            let val = emit_expr(context, builder, &assign.expr, variables)?;
-            let ptr = emit_lvalue(context, builder, &assign.target, variables)?;
+            let val = emit_expr(
+                context,
+                builder,
+                &assign.expr,
+                variables,
+                function_types,
+                module,
+            )?;
+            let ptr = emit_lvalue(
+                context,
+                builder,
+                &assign.target,
+                variables,
+                function_types,
+                module,
+            )?;
             builder
                 .build_store(ptr, val)
                 .map_err(|err| format!("failed to build store: {err}"))?;
         }
         Statement::Return(ret_stmt) => {
-            let val = emit_expr(context, builder, &ret_stmt.expr, variables)?;
+            let val = emit_expr(
+                context,
+                builder,
+                &ret_stmt.expr,
+                variables,
+                function_types,
+                module,
+            )?;
             let val_int = match val {
                 BasicValueEnum::IntValue(i) => i,
                 _ => return Err("function return value must be an integer".to_string()),
@@ -459,15 +666,35 @@ fn emit_statement<'ctx>(
         Statement::Block(body) => {
             variables.push(HashMap::new());
             for stmt in body {
-                if builder.get_insert_block().and_then(|bb| bb.get_terminator()).is_some() {
+                if builder
+                    .get_insert_block()
+                    .and_then(|bb| bb.get_terminator())
+                    .is_some()
+                {
                     break;
                 }
-                emit_statement(context, builder, stmt, variables, ret_val_ptr, return_bb)?;
+                emit_statement(
+                    context,
+                    builder,
+                    stmt,
+                    variables,
+                    ret_val_ptr,
+                    return_bb,
+                    function_types,
+                    module,
+                )?;
             }
             variables.pop();
         }
         Statement::If(if_stmt) => {
-            let cond_val = emit_expr(context, builder, &if_stmt.cond, variables)?;
+            let cond_val = emit_expr(
+                context,
+                builder,
+                &if_stmt.cond,
+                variables,
+                function_types,
+                module,
+            )?;
             let cond_int = match cond_val {
                 BasicValueEnum::IntValue(i) => i,
                 _ => return Err("if condition must be an integer".to_string()),
@@ -494,18 +721,48 @@ fn emit_statement<'ctx>(
 
             // Emit then branch
             builder.position_at_end(then_bb);
-            emit_statement(context, builder, &if_stmt.then_branch, variables, ret_val_ptr, return_bb)?;
-            if builder.get_insert_block().and_then(|bb| bb.get_terminator()).is_none() {
-                builder.build_unconditional_branch(merge_bb).map_err(|err| err.to_string())?;
+            emit_statement(
+                context,
+                builder,
+                &if_stmt.then_branch,
+                variables,
+                ret_val_ptr,
+                return_bb,
+                function_types,
+                module,
+            )?;
+            if builder
+                .get_insert_block()
+                .and_then(|bb| bb.get_terminator())
+                .is_none()
+            {
+                builder
+                    .build_unconditional_branch(merge_bb)
+                    .map_err(|err| err.to_string())?;
             }
 
             // Emit else branch
             builder.position_at_end(else_bb);
             if let Some(else_branch) = &if_stmt.else_branch {
-                emit_statement(context, builder, else_branch, variables, ret_val_ptr, return_bb)?;
+                emit_statement(
+                    context,
+                    builder,
+                    else_branch,
+                    variables,
+                    ret_val_ptr,
+                    return_bb,
+                    function_types,
+                    module,
+                )?;
             }
-            if builder.get_insert_block().and_then(|bb| bb.get_terminator()).is_none() {
-                builder.build_unconditional_branch(merge_bb).map_err(|err| err.to_string())?;
+            if builder
+                .get_insert_block()
+                .and_then(|bb| bb.get_terminator())
+                .is_none()
+            {
+                builder
+                    .build_unconditional_branch(merge_bb)
+                    .map_err(|err| err.to_string())?;
             }
 
             // Move to merge block
@@ -519,11 +776,20 @@ fn emit_statement<'ctx>(
             let body_bb = context.append_basic_block(parent_func, "while.body");
             let merge_bb = context.append_basic_block(parent_func, "while.cont");
 
-            builder.build_unconditional_branch(cond_bb).map_err(|err| err.to_string())?;
+            builder
+                .build_unconditional_branch(cond_bb)
+                .map_err(|err| err.to_string())?;
 
             // Cond block
             builder.position_at_end(cond_bb);
-            let cond_val = emit_expr(context, builder, &while_stmt.cond, variables)?;
+            let cond_val = emit_expr(
+                context,
+                builder,
+                &while_stmt.cond,
+                variables,
+                function_types,
+                module,
+            )?;
             let cond_int = match cond_val {
                 BasicValueEnum::IntValue(i) => i,
                 _ => return Err("while condition must be an integer".to_string()),
@@ -542,9 +808,24 @@ fn emit_statement<'ctx>(
 
             // Body block
             builder.position_at_end(body_bb);
-            emit_statement(context, builder, &while_stmt.body, variables, ret_val_ptr, return_bb)?;
-            if builder.get_insert_block().and_then(|bb| bb.get_terminator()).is_none() {
-                builder.build_unconditional_branch(cond_bb).map_err(|err| err.to_string())?;
+            emit_statement(
+                context,
+                builder,
+                &while_stmt.body,
+                variables,
+                ret_val_ptr,
+                return_bb,
+                function_types,
+                module,
+            )?;
+            if builder
+                .get_insert_block()
+                .and_then(|bb| bb.get_terminator())
+                .is_none()
+            {
+                builder
+                    .build_unconditional_branch(cond_bb)
+                    .map_err(|err| err.to_string())?;
             }
 
             // Continue from merge block
@@ -554,7 +835,16 @@ fn emit_statement<'ctx>(
             variables.push(HashMap::new());
 
             if let Some(init) = &for_stmt.init {
-                emit_statement(context, builder, init, variables, ret_val_ptr, return_bb)?;
+                emit_statement(
+                    context,
+                    builder,
+                    init,
+                    variables,
+                    ret_val_ptr,
+                    return_bb,
+                    function_types,
+                    module,
+                )?;
             }
 
             let start_bb = builder.get_insert_block().ok_or("no insert block")?;
@@ -565,12 +855,21 @@ fn emit_statement<'ctx>(
             let step_bb = context.append_basic_block(parent_func, "for.step");
             let merge_bb = context.append_basic_block(parent_func, "for.cont");
 
-            builder.build_unconditional_branch(cond_bb).map_err(|err| err.to_string())?;
+            builder
+                .build_unconditional_branch(cond_bb)
+                .map_err(|err| err.to_string())?;
 
             // Cond block
             builder.position_at_end(cond_bb);
             let cond_is_true = if let Some(cond_expr) = &for_stmt.cond {
-                let cond_val = emit_expr(context, builder, cond_expr, variables)?;
+                let cond_val = emit_expr(
+                    context,
+                    builder,
+                    cond_expr,
+                    variables,
+                    function_types,
+                    module,
+                )?;
                 let cond_int = match cond_val {
                     BasicValueEnum::IntValue(i) => i,
                     _ => return Err("for condition must be an integer".to_string()),
@@ -592,17 +891,43 @@ fn emit_statement<'ctx>(
 
             // Body block
             builder.position_at_end(body_bb);
-            emit_statement(context, builder, &for_stmt.body, variables, ret_val_ptr, return_bb)?;
-            if builder.get_insert_block().and_then(|bb| bb.get_terminator()).is_none() {
-                builder.build_unconditional_branch(step_bb).map_err(|err| err.to_string())?;
+            emit_statement(
+                context,
+                builder,
+                &for_stmt.body,
+                variables,
+                ret_val_ptr,
+                return_bb,
+                function_types,
+                module,
+            )?;
+            if builder
+                .get_insert_block()
+                .and_then(|bb| bb.get_terminator())
+                .is_none()
+            {
+                builder
+                    .build_unconditional_branch(step_bb)
+                    .map_err(|err| err.to_string())?;
             }
 
             // Step block
             builder.position_at_end(step_bb);
             if let Some(post) = &for_stmt.post {
-                emit_statement(context, builder, post, variables, ret_val_ptr, return_bb)?;
+                emit_statement(
+                    context,
+                    builder,
+                    post,
+                    variables,
+                    ret_val_ptr,
+                    return_bb,
+                    function_types,
+                    module,
+                )?;
             }
-            builder.build_unconditional_branch(cond_bb).map_err(|err| err.to_string())?;
+            builder
+                .build_unconditional_branch(cond_bb)
+                .map_err(|err| err.to_string())?;
 
             // Continue from merge block
             builder.position_at_end(merge_bb);
@@ -618,18 +943,20 @@ mod tests {
     use super::generate_ir;
     use crate::ast::{
         BinaryExpr, BinaryOp, Expr, Function, IntegerLiteral, Program, ReturnStatement, Statement,
-        UnaryExpr, UnaryOp, VarAssignStatement, VarDeclareStatement, VariableExpr, Type,
+        Type, UnaryExpr, UnaryOp, VarAssignStatement, VarDeclareStatement, VariableExpr,
     };
 
     #[test]
     fn generates_llvm_ir_for_integer_return() {
         let program = Program {
-            function: Function {
+            functions: vec![Function {
                 name: "main".to_string(),
+                return_type: Type::Int,
+                params: vec![],
                 body: vec![Statement::Return(ReturnStatement {
                     expr: Expr::IntegerLiteral(IntegerLiteral { value: 5 }),
                 })],
-            },
+            }],
         };
 
         let ir = generate_ir(&program).expect("should generate LLVM IR");
@@ -642,8 +969,10 @@ mod tests {
     #[test]
     fn generates_llvm_ir_for_arithmetic_expression() {
         let program = Program {
-            function: Function {
+            functions: vec![Function {
                 name: "main".to_string(),
+                return_type: Type::Int,
+                params: vec![],
                 body: vec![Statement::Return(ReturnStatement {
                     expr: Expr::Binary(BinaryExpr {
                         left: Box::new(Expr::IntegerLiteral(IntegerLiteral { value: 4 })),
@@ -655,7 +984,7 @@ mod tests {
                         })),
                     }),
                 })],
-            },
+            }],
         };
 
         let ir = generate_ir(&program).expect("should generate LLVM IR");
@@ -668,15 +997,17 @@ mod tests {
     #[test]
     fn generates_llvm_ir_for_unary_negation() {
         let program = Program {
-            function: Function {
+            functions: vec![Function {
                 name: "main".to_string(),
+                return_type: Type::Int,
+                params: vec![],
                 body: vec![Statement::Return(ReturnStatement {
                     expr: Expr::Unary(UnaryExpr {
                         operator: UnaryOp::Negate,
                         expr: Box::new(Expr::IntegerLiteral(IntegerLiteral { value: 5 })),
                     }),
                 })],
-            },
+            }],
         };
 
         let ir = generate_ir(&program).expect("should generate LLVM IR");
@@ -689,8 +1020,10 @@ mod tests {
     #[test]
     fn generates_llvm_ir_for_variables() {
         let program = Program {
-            function: Function {
+            functions: vec![Function {
                 name: "main".to_string(),
+                return_type: Type::Int,
+                params: vec![],
                 body: vec![
                     Statement::Declare(VarDeclareStatement {
                         name: "x".to_string(),
@@ -715,7 +1048,7 @@ mod tests {
                         }),
                     }),
                 ],
-            },
+            }],
         };
 
         let ir = generate_ir(&program).expect("should generate LLVM IR");
@@ -731,8 +1064,10 @@ mod tests {
     #[test]
     fn generates_llvm_ir_for_comparison() {
         let program = Program {
-            function: Function {
+            functions: vec![Function {
                 name: "main".to_string(),
+                return_type: Type::Int,
+                params: vec![],
                 body: vec![
                     Statement::Declare(VarDeclareStatement {
                         name: "x".to_string(),
@@ -749,7 +1084,7 @@ mod tests {
                         }),
                     }),
                 ],
-            },
+            }],
         };
 
         let ir = generate_ir(&program).expect("should generate LLVM IR");
@@ -762,8 +1097,10 @@ mod tests {
     #[test]
     fn generates_llvm_ir_for_logical_and() {
         let program = Program {
-            function: Function {
+            functions: vec![Function {
                 name: "main".to_string(),
+                return_type: Type::Int,
+                params: vec![],
                 body: vec![Statement::Return(ReturnStatement {
                     expr: Expr::Binary(BinaryExpr {
                         left: Box::new(Expr::IntegerLiteral(IntegerLiteral { value: 1 })),
@@ -771,7 +1108,7 @@ mod tests {
                         right: Box::new(Expr::IntegerLiteral(IntegerLiteral { value: 2 })),
                     }),
                 })],
-            },
+            }],
         };
 
         let ir = generate_ir(&program).expect("should generate LLVM IR");
