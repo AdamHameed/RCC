@@ -108,6 +108,30 @@ fn evaluates_logical_operators() {
 }
 
 #[test]
+fn evaluates_simple_pointer() {
+    assert_program_exit_code(
+        "int main() {\n    int x = 42;\n    int* p = &x;\n    return *p;\n}\n",
+        42,
+    );
+}
+
+#[test]
+fn evaluates_pointer_assignment() {
+    assert_program_exit_code(
+        "int main() {\n    int x = 42;\n    int* p = &x;\n    *p = 100;\n    return x;\n}\n",
+        100,
+    );
+}
+
+#[test]
+fn evaluates_double_pointer() {
+    assert_program_exit_code(
+        "int main() {\n    int x = 42;\n    int* p = &x;\n    int** pp = &p;\n    **pp = 200;\n    return x;\n}\n",
+        200,
+    );
+}
+
+#[test]
 fn rejects_invalid_parameters() {
     let test_dir = make_test_dir();
     let input_path = test_dir.join("input.c");

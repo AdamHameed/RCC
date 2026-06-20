@@ -1,9 +1,9 @@
-use crate::ast::{BinaryOp, Expr, Program, Statement, UnaryOp};
+use crate::ast::{BinaryOp, Expr, Program, Statement, UnaryOp, Type};
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetMachine};
-use inkwell::values::{IntValue, PointerValue};
-use inkwell::{IntPredicate, OptimizationLevel};
+use inkwell::values::{PointerValue, BasicValueEnum};
+use inkwell::{IntPredicate, OptimizationLevel, AddressSpace};
 use std::collections::HashMap;
 
 pub fn generate_ir(program: &Program) -> Result<String, String> {
@@ -45,26 +45,29 @@ pub fn generate_ir(program: &Program) -> Result<String, String> {
         match statement {
             Statement::Declare(decl) => {
                 let init_val = emit_expr(&context, &builder, &decl.init, &variables)?;
+                let llvm_ty = llvm_type(&context, &decl.ty);
                 let alloca = builder
-                    .build_alloca(i32_type, &decl.name)
+                    .build_alloca(llvm_ty, &decl.name)
                     .map_err(|err| format!("failed to build alloca: {err}"))?;
                 builder
                     .build_store(alloca, init_val)
                     .map_err(|err| format!("failed to build store: {err}"))?;
-                variables.insert(decl.name.clone(), alloca);
+                variables.insert(decl.name.clone(), (decl.ty.clone(), alloca));
             }
             Statement::Assign(assign) => {
                 let val = emit_expr(&context, &builder, &assign.expr, &variables)?;
-                let ptr = variables
-                    .get(&assign.name)
-                    .ok_or_else(|| format!("undefined variable '{}'", assign.name))?;
+                let ptr = emit_lvalue(&context, &builder, &assign.target, &variables)?;
                 builder
-                    .build_store(*ptr, val)
+                    .build_store(ptr, val)
                     .map_err(|err| format!("failed to build store: {err}"))?;
             }
             Statement::Return(ret_stmt) => {
                 let val = emit_expr(&context, &builder, &ret_stmt.expr, &variables)?;
-                return_value = Some(val);
+                let val_int = match val {
+                    BasicValueEnum::IntValue(i) => i,
+                    _ => return Err("function return value must be an integer".to_string()),
+                };
+                return_value = Some(val_int);
                 break;
             }
         }
@@ -82,50 +85,146 @@ pub fn generate_ir(program: &Program) -> Result<String, String> {
     Ok(module.print_to_string().to_string())
 }
 
+fn llvm_type<'ctx>(
+    context: &'ctx Context,
+    ty: &Type,
+) -> inkwell::types::BasicTypeEnum<'ctx> {
+    match ty {
+        Type::Int => inkwell::types::BasicTypeEnum::IntType(context.i32_type()),
+        Type::Pointer(_) => inkwell::types::BasicTypeEnum::PointerType(
+            context.ptr_type(AddressSpace::default()),
+        ),
+    }
+}
+
+fn type_of_expr(
+    expr: &Expr,
+    variables: &HashMap<String, (Type, PointerValue)>,
+) -> Result<Type, String> {
+    match expr {
+        Expr::IntegerLiteral(_) => Ok(Type::Int),
+        Expr::Variable(var) => {
+            let (ty, _) = variables
+                .get(&var.name)
+                .ok_or_else(|| format!("undefined variable '{}'", var.name))?;
+            Ok(ty.clone())
+        }
+        Expr::Unary(unary) => match unary.operator {
+            UnaryOp::Negate | UnaryOp::Posate | UnaryOp::LogicalNot => Ok(Type::Int),
+            UnaryOp::Deref => {
+                let inner_ty = type_of_expr(&unary.expr, variables)?;
+                match inner_ty {
+                    Type::Pointer(boxed_ty) => Ok(*boxed_ty),
+                    _ => Err("cannot dereference non-pointer type".to_string()),
+                }
+            }
+            UnaryOp::AddrOf => {
+                let inner_ty = type_of_expr(&unary.expr, variables)?;
+                Ok(Type::Pointer(Box::new(inner_ty)))
+            }
+        },
+        Expr::Binary(_) => Ok(Type::Int),
+    }
+}
+
+fn emit_lvalue<'ctx>(
+    context: &'ctx Context,
+    builder: &Builder<'ctx>,
+    expr: &Expr,
+    variables: &HashMap<String, (Type, PointerValue<'ctx>)>,
+) -> Result<PointerValue<'ctx>, String> {
+    match expr {
+        Expr::Variable(var) => {
+            let (_, ptr) = variables
+                .get(&var.name)
+                .ok_or_else(|| format!("undefined variable '{}'", var.name))?;
+            Ok(*ptr)
+        }
+        Expr::Unary(unary) if unary.operator == UnaryOp::Deref => {
+            let val = emit_expr(context, builder, &unary.expr, variables)?;
+            match val {
+                BasicValueEnum::PointerValue(ptr) => Ok(ptr),
+                _ => Err("dereference target did not evaluate to a pointer".to_string()),
+            }
+        }
+        _ => Err("expression is not an lvalue".to_string()),
+    }
+}
+
 fn emit_expr<'ctx>(
     context: &'ctx Context,
     builder: &Builder<'ctx>,
     expr: &Expr,
-    variables: &HashMap<String, PointerValue<'ctx>>,
-) -> Result<IntValue<'ctx>, String> {
+    variables: &HashMap<String, (Type, PointerValue<'ctx>)>,
+) -> Result<BasicValueEnum<'ctx>, String> {
     match expr {
         Expr::IntegerLiteral(integer) => {
-            Ok(context.i32_type().const_int(integer.value as u64, true))
+            Ok(BasicValueEnum::IntValue(
+                context.i32_type().const_int(integer.value as u64, true),
+            ))
         }
         Expr::Variable(var) => {
-            let ptr = variables
+            let (ty, ptr) = variables
                 .get(&var.name)
                 .ok_or_else(|| format!("undefined variable '{}'", var.name))?;
+            let llvm_ty = llvm_type(context, ty);
             builder
-                .build_load(context.i32_type(), *ptr, &var.name)
+                .build_load(llvm_ty, *ptr, &var.name)
                 .map_err(|err| {
                     format!(
                         "failed to build load instruction for variable '{}': {err}",
                         var.name
                     )
                 })
-                .map(|v| v.into_int_value())
         }
-        Expr::Unary(unary) => {
-            let operand = emit_expr(context, builder, &unary.expr, variables)?;
-            match unary.operator {
-                UnaryOp::Negate => builder
-                    .build_int_neg(operand, "negtmp")
-                    .map_err(|err| format!("failed to emit neg instruction: {err}")),
-                UnaryOp::Posate => Ok(operand),
-                UnaryOp::LogicalNot => {
-                    let zero = context.i32_type().const_zero();
-                    let cmp = builder
-                        .build_int_compare(IntPredicate::EQ, operand, zero, "nottmp")
-                        .map_err(|err| {
-                            format!("failed to emit comparison for logical not: {err}")
-                        })?;
-                    builder
-                        .build_int_z_extend(cmp, context.i32_type(), "casttmp")
-                        .map_err(|err| format!("failed to emit zext for logical not: {err}"))
-                }
+        Expr::Unary(unary) => match unary.operator {
+            UnaryOp::Deref => {
+                let val = emit_expr(context, builder, &unary.expr, variables)?;
+                let ptr = match val {
+                    BasicValueEnum::PointerValue(p) => p,
+                    _ => return Err("dereference operand did not evaluate to a pointer".to_string()),
+                };
+                let expr_ty = type_of_expr(&unary.expr, variables)?;
+                let inner_ty = match expr_ty {
+                    Type::Pointer(inner) => *inner,
+                    _ => return Err("cannot dereference non-pointer type".to_string()),
+                };
+                let llvm_ty = llvm_type(context, &inner_ty);
+                builder
+                    .build_load(llvm_ty, ptr, "dereftmp")
+                    .map_err(|err| err.to_string())
             }
-        }
+            UnaryOp::AddrOf => {
+                let ptr = emit_lvalue(context, builder, &unary.expr, variables)?;
+                Ok(BasicValueEnum::PointerValue(ptr))
+            }
+            UnaryOp::Negate | UnaryOp::Posate | UnaryOp::LogicalNot => {
+                let operand = emit_expr(context, builder, &unary.expr, variables)?;
+                let operand_int = match operand {
+                    BasicValueEnum::IntValue(i) => i,
+                    _ => return Err("expected integer operand for unary operator".to_string()),
+                };
+                let res = match unary.operator {
+                    UnaryOp::Negate => builder
+                        .build_int_neg(operand_int, "negtmp")
+                        .map_err(|err| format!("failed to emit neg instruction: {err}"))?,
+                    UnaryOp::Posate => operand_int,
+                    UnaryOp::LogicalNot => {
+                        let zero = context.i32_type().const_zero();
+                        let cmp = builder
+                            .build_int_compare(IntPredicate::EQ, operand_int, zero, "nottmp")
+                            .map_err(|err| {
+                                format!("failed to emit comparison for logical not: {err}")
+                            })?;
+                        builder
+                            .build_int_z_extend(cmp, context.i32_type(), "casttmp")
+                            .map_err(|err| format!("failed to emit zext for logical not: {err}"))?
+                    }
+                    _ => unreachable!(),
+                };
+                Ok(BasicValueEnum::IntValue(res))
+            }
+        },
         Expr::Binary(binary) => {
             let is_logical_op =
                 matches!(binary.operator, BinaryOp::LogicalAnd | BinaryOp::LogicalOr);
@@ -134,10 +233,14 @@ fn emit_expr<'ctx>(
                 match binary.operator {
                     BinaryOp::LogicalAnd => {
                         let lhs_val = emit_expr(context, builder, &binary.left, variables)?;
+                        let lhs_int = match lhs_val {
+                            BasicValueEnum::IntValue(i) => i,
+                            _ => return Err("expected integer for logical AND operand".to_string()),
+                        };
                         let lhs_is_true = builder
                             .build_int_compare(
                                 IntPredicate::NE,
-                                lhs_val,
+                                lhs_int,
                                 context.i32_type().const_zero(),
                                 "lhs_true",
                             )
@@ -156,10 +259,14 @@ fn emit_expr<'ctx>(
                         // RHS block
                         builder.position_at_end(rhs_bb);
                         let rhs_val = emit_expr(context, builder, &binary.right, variables)?;
+                        let rhs_int = match rhs_val {
+                            BasicValueEnum::IntValue(i) => i,
+                            _ => return Err("expected integer for logical AND operand".to_string()),
+                        };
                         let rhs_is_true = builder
                             .build_int_compare(
                                 IntPredicate::NE,
-                                rhs_val,
+                                rhs_int,
                                 context.i32_type().const_zero(),
                                 "rhs_true",
                             )
@@ -182,14 +289,18 @@ fn emit_expr<'ctx>(
                             (&context.i32_type().const_zero(), start_bb),
                             (&rhs_res, actual_rhs_bb),
                         ]);
-                        Ok(phi.as_basic_value().into_int_value())
+                        Ok(BasicValueEnum::IntValue(phi.as_basic_value().into_int_value()))
                     }
                     BinaryOp::LogicalOr => {
                         let lhs_val = emit_expr(context, builder, &binary.left, variables)?;
+                        let lhs_int = match lhs_val {
+                            BasicValueEnum::IntValue(i) => i,
+                            _ => return Err("expected integer for logical OR operand".to_string()),
+                        };
                         let lhs_is_true = builder
                             .build_int_compare(
                                 IntPredicate::NE,
-                                lhs_val,
+                                lhs_int,
                                 context.i32_type().const_zero(),
                                 "lhs_true",
                             )
@@ -208,10 +319,14 @@ fn emit_expr<'ctx>(
                         // RHS block
                         builder.position_at_end(rhs_bb);
                         let rhs_val = emit_expr(context, builder, &binary.right, variables)?;
+                        let rhs_int = match rhs_val {
+                            BasicValueEnum::IntValue(i) => i,
+                            _ => return Err("expected integer for logical OR operand".to_string()),
+                        };
                         let rhs_is_true = builder
                             .build_int_compare(
                                 IntPredicate::NE,
-                                rhs_val,
+                                rhs_int,
                                 context.i32_type().const_zero(),
                                 "rhs_true",
                             )
@@ -234,27 +349,35 @@ fn emit_expr<'ctx>(
                             (&context.i32_type().const_int(1, false), start_bb),
                             (&rhs_res, actual_rhs_bb),
                         ]);
-                        Ok(phi.as_basic_value().into_int_value())
+                        Ok(BasicValueEnum::IntValue(phi.as_basic_value().into_int_value()))
                     }
                     _ => unreachable!(),
                 }
             } else {
-                let left = emit_expr(context, builder, &binary.left, variables)?;
-                let right = emit_expr(context, builder, &binary.right, variables)?;
+                let left_val = emit_expr(context, builder, &binary.left, variables)?;
+                let right_val = emit_expr(context, builder, &binary.right, variables)?;
+                let left = match left_val {
+                    BasicValueEnum::IntValue(i) => i,
+                    _ => return Err("expected integer operand".to_string()),
+                };
+                let right = match right_val {
+                    BasicValueEnum::IntValue(i) => i,
+                    _ => return Err("expected integer operand".to_string()),
+                };
 
-                match binary.operator {
+                let res = match binary.operator {
                     BinaryOp::Add => builder
                         .build_int_add(left, right, "addtmp")
-                        .map_err(|err| format!("failed to emit add instruction: {err}")),
+                        .map_err(|err| format!("failed to emit add instruction: {err}"))?,
                     BinaryOp::Subtract => builder
                         .build_int_sub(left, right, "subtmp")
-                        .map_err(|err| format!("failed to emit sub instruction: {err}")),
+                        .map_err(|err| format!("failed to emit sub instruction: {err}"))?,
                     BinaryOp::Multiply => builder
                         .build_int_mul(left, right, "multmp")
-                        .map_err(|err| format!("failed to emit mul instruction: {err}")),
+                        .map_err(|err| format!("failed to emit mul instruction: {err}"))?,
                     BinaryOp::Divide => builder
                         .build_int_signed_div(left, right, "divtmp")
-                        .map_err(|err| format!("failed to emit div instruction: {err}")),
+                        .map_err(|err| format!("failed to emit div instruction: {err}"))?,
                     BinaryOp::Equal
                     | BinaryOp::NotEqual
                     | BinaryOp::LessThan
@@ -275,10 +398,11 @@ fn emit_expr<'ctx>(
                             .map_err(|err| format!("failed to emit cmp instruction: {err}"))?;
                         builder
                             .build_int_z_extend(cmp, context.i32_type(), "casttmp")
-                            .map_err(|err| format!("failed to emit zext instruction: {err}"))
+                            .map_err(|err| format!("failed to emit zext instruction: {err}"))?
                     }
                     _ => unreachable!(),
-                }
+                };
+                Ok(BasicValueEnum::IntValue(res))
             }
         }
     }
@@ -289,7 +413,7 @@ mod tests {
     use super::generate_ir;
     use crate::ast::{
         BinaryExpr, BinaryOp, Expr, Function, IntegerLiteral, Program, ReturnStatement, Statement,
-        UnaryExpr, UnaryOp, VarAssignStatement, VarDeclareStatement, VariableExpr,
+        UnaryExpr, UnaryOp, VarAssignStatement, VarDeclareStatement, VariableExpr, Type,
     };
 
     #[test]
@@ -362,10 +486,13 @@ mod tests {
                 body: vec![
                     Statement::Declare(VarDeclareStatement {
                         name: "x".to_string(),
+                        ty: Type::Int,
                         init: Expr::IntegerLiteral(IntegerLiteral { value: 42 }),
                     }),
                     Statement::Assign(VarAssignStatement {
-                        name: "x".to_string(),
+                        target: Expr::Variable(VariableExpr {
+                            name: "x".to_string(),
+                        }),
                         expr: Expr::Binary(BinaryExpr {
                             left: Box::new(Expr::Variable(VariableExpr {
                                 name: "x".to_string(),
@@ -401,6 +528,7 @@ mod tests {
                 body: vec![
                     Statement::Declare(VarDeclareStatement {
                         name: "x".to_string(),
+                        ty: Type::Int,
                         init: Expr::IntegerLiteral(IntegerLiteral { value: 5 }),
                     }),
                     Statement::Return(ReturnStatement {

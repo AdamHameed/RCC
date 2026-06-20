@@ -1,7 +1,7 @@
 use crate::ast::{BinaryExpr, BinaryOp, UnaryExpr, UnaryOp};
 use crate::ast::{
     Expr, Function, IntegerLiteral, Program, ReturnStatement, Statement, VarAssignStatement,
-    VarDeclareStatement, VariableExpr,
+    VarDeclareStatement, VariableExpr, Type,
 };
 use crate::lexer::Token;
 
@@ -61,8 +61,18 @@ impl<'a> Parser<'a> {
         Ok(Program { function })
     }
 
-    pub fn parse_function(&mut self) -> Result<Function, ParseError> {
+    fn parse_type(&mut self) -> Result<Type, ParseError> {
         self.expect_keyword_int()?;
+        let mut ty = Type::Int;
+        while self.peek() == Some(&Token::Star) {
+            self.next();
+            ty = Type::Pointer(Box::new(ty));
+        }
+        Ok(ty)
+    }
+
+    pub fn parse_function(&mut self) -> Result<Function, ParseError> {
+        self.parse_type()?;
         let name = self.parse_identifier()?;
         self.expect_left_paren()?;
 
@@ -101,23 +111,23 @@ impl<'a> Parser<'a> {
                 Ok(Statement::Return(ReturnStatement { expr }))
             }
             Some(Token::Int) => {
-                self.next();
+                let ty = self.parse_type()?;
                 let name = self.parse_identifier()?;
                 self.expect_token(Token::Equals, "`=`")?;
                 let init = self.parse_expression()?;
                 self.expect_semicolon()?;
-                Ok(Statement::Declare(VarDeclareStatement { name, init }))
+                Ok(Statement::Declare(VarDeclareStatement { name, ty, init }))
             }
-            Some(Token::Identifier(_)) => {
-                let name = self.parse_identifier()?;
+            Some(_) => {
+                let target = self.parse_unary()?;
                 self.expect_token(Token::Equals, "`=`")?;
                 let expr = self.parse_expression()?;
                 self.expect_semicolon()?;
-                Ok(Statement::Assign(VarAssignStatement { name, expr }))
+                Ok(Statement::Assign(VarAssignStatement { target, expr }))
             }
-            other => Err(ParseError::UnexpectedToken {
+            None => Err(ParseError::UnexpectedToken {
                 expected: "statement (return, variable declaration, or assignment)",
-                found: other.cloned(),
+                found: None,
             }),
         }
     }
@@ -282,6 +292,22 @@ impl<'a> Parser<'a> {
                     expr: Box::new(expr),
                 }))
             }
+            Some(Token::Star) => {
+                self.next();
+                let expr = self.parse_unary()?;
+                Ok(Expr::Unary(UnaryExpr {
+                    operator: UnaryOp::Deref,
+                    expr: Box::new(expr),
+                }))
+            }
+            Some(Token::Ampersand) => {
+                self.next();
+                let expr = self.parse_unary()?;
+                Ok(Expr::Unary(UnaryExpr {
+                    operator: UnaryOp::AddrOf,
+                    expr: Box::new(expr),
+                }))
+            }
             _ => self.parse_primary(),
         }
     }
@@ -381,7 +407,7 @@ mod tests {
     use super::{ParseError, Parser, parse};
     use crate::ast::{
         BinaryExpr, BinaryOp, Expr, Function, IntegerLiteral, Program, ReturnStatement, Statement,
-        UnaryExpr, UnaryOp, VarAssignStatement, VarDeclareStatement, VariableExpr,
+        UnaryExpr, UnaryOp, VarAssignStatement, VarDeclareStatement, VariableExpr, Type,
     };
     use crate::lexer::Token;
 
@@ -621,10 +647,13 @@ mod tests {
             vec![
                 Statement::Declare(VarDeclareStatement {
                     name: "x".to_string(),
+                    ty: Type::Int,
                     init: Expr::IntegerLiteral(IntegerLiteral { value: 5 }),
                 }),
                 Statement::Assign(VarAssignStatement {
-                    name: "x".to_string(),
+                    target: Expr::Variable(VariableExpr {
+                        name: "x".to_string(),
+                    }),
                     expr: Expr::Binary(BinaryExpr {
                         left: Box::new(Expr::Variable(VariableExpr {
                             name: "x".to_string()

@@ -10,6 +10,12 @@ pub struct Function {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Type {
+    Int,
+    Pointer(Box<Type>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Statement {
     Return(ReturnStatement),
     Declare(VarDeclareStatement),
@@ -24,12 +30,13 @@ pub struct ReturnStatement {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VarDeclareStatement {
     pub name: String,
+    pub ty: Type,
     pub init: Expr,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VarAssignStatement {
-    pub name: String,
+    pub target: Expr,
     pub expr: Expr,
 }
 
@@ -62,6 +69,8 @@ pub enum UnaryOp {
     Negate,
     Posate,
     LogicalNot,
+    Deref,
+    AddrOf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

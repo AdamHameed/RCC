@@ -23,6 +23,7 @@ pub enum Token {
     AndAnd,
     OrOr,
     Exclamation,
+    Ampersand,
     Integer(i32),
 }
 
@@ -115,7 +116,7 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, String> {
                     chars.next();
                     tokens.push(Token::AndAnd);
                 } else {
-                    return Err("expected '&' after '&'".to_string());
+                    tokens.push(Token::Ampersand);
                 }
             }
             '|' => {
@@ -278,7 +279,7 @@ mod tests {
 
     #[test]
     fn tokenizes_relational_and_logical_operators() {
-        let source = "== != < <= > >= && || !";
+        let source = "== != < <= > >= && || ! &";
         let tokens = tokenize(source).expect("should succeed");
         assert_eq!(
             tokens,
@@ -292,6 +293,7 @@ mod tests {
                 Token::AndAnd,
                 Token::OrOr,
                 Token::Exclamation,
+                Token::Ampersand,
             ]
         );
     }
