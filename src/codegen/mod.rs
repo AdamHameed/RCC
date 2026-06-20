@@ -35,45 +35,37 @@ pub fn generate_ir(program: &Program) -> Result<String, String> {
     let i32_type = context.i32_type();
     let function_type = i32_type.fn_type(&[], false);
     let function = module.add_function(&program.function.name, function_type, None);
+
     let entry = context.append_basic_block(function, "entry");
+    let return_bb = context.append_basic_block(function, "return");
+
     builder.position_at_end(entry);
 
-    let mut return_value = None;
-    let mut variables = HashMap::new();
+    let ret_val_ptr = builder
+        .build_alloca(i32_type, "retval")
+        .map_err(|err| format!("failed to build retval alloca: {err}"))?;
+    builder
+        .build_store(ret_val_ptr, i32_type.const_zero())
+        .map_err(|err| format!("failed to store initial retval: {err}"))?;
+
+    let mut variables = vec![HashMap::new()];
 
     for statement in &program.function.body {
-        match statement {
-            Statement::Declare(decl) => {
-                let init_val = emit_expr(&context, &builder, &decl.init, &variables)?;
-                let llvm_ty = llvm_type(&context, &decl.ty);
-                let alloca = builder
-                    .build_alloca(llvm_ty, &decl.name)
-                    .map_err(|err| format!("failed to build alloca: {err}"))?;
-                builder
-                    .build_store(alloca, init_val)
-                    .map_err(|err| format!("failed to build store: {err}"))?;
-                variables.insert(decl.name.clone(), (decl.ty.clone(), alloca));
-            }
-            Statement::Assign(assign) => {
-                let val = emit_expr(&context, &builder, &assign.expr, &variables)?;
-                let ptr = emit_lvalue(&context, &builder, &assign.target, &variables)?;
-                builder
-                    .build_store(ptr, val)
-                    .map_err(|err| format!("failed to build store: {err}"))?;
-            }
-            Statement::Return(ret_stmt) => {
-                let val = emit_expr(&context, &builder, &ret_stmt.expr, &variables)?;
-                let val_int = match val {
-                    BasicValueEnum::IntValue(i) => i,
-                    _ => return Err("function return value must be an integer".to_string()),
-                };
-                return_value = Some(val_int);
-                break;
-            }
+        if builder.get_insert_block().and_then(|bb| bb.get_terminator()).is_some() {
+            break;
         }
+        emit_statement(&context, &builder, statement, &mut variables, ret_val_ptr, return_bb)?;
     }
 
-    let return_val = return_value.unwrap_or_else(|| i32_type.const_zero());
+    if builder.get_insert_block().and_then(|bb| bb.get_terminator()).is_none() {
+        builder.build_unconditional_branch(return_bb).map_err(|err| err.to_string())?;
+    }
+
+    builder.position_at_end(return_bb);
+    let return_val = builder
+        .build_load(i32_type, ret_val_ptr, "retval")
+        .map_err(|err| format!("failed to load return value: {err}"))?
+        .into_int_value();
     builder
         .build_return(Some(&return_val))
         .map_err(|err| format!("failed to build return instruction: {err}"))?;
@@ -97,17 +89,33 @@ fn llvm_type<'ctx>(
     }
 }
 
+fn lookup_variable<'a, 'ctx>(
+    name: &str,
+    variables: &'a [HashMap<String, (Type, PointerValue<'ctx>)>],
+) -> Option<&'a (Type, PointerValue<'ctx>)> {
+    for scope in variables.iter().rev() {
+        if let Some(val) = scope.get(name) {
+            return Some(val);
+        }
+    }
+    None
+}
+
 fn type_of_expr(
     expr: &Expr,
-    variables: &HashMap<String, (Type, PointerValue)>,
+    variables: &[HashMap<String, (Type, PointerValue)>],
 ) -> Result<Type, String> {
     match expr {
         Expr::IntegerLiteral(_) => Ok(Type::Int),
         Expr::Variable(var) => {
-            let (ty, _) = variables
-                .get(&var.name)
-                .ok_or_else(|| format!("undefined variable '{}'", var.name))?;
-            Ok(ty.clone())
+            let mut found = None;
+            for scope in variables.iter().rev() {
+                if let Some((ty, _)) = scope.get(&var.name) {
+                    found = Some(ty.clone());
+                    break;
+                }
+            }
+            found.ok_or_else(|| format!("undefined variable '{}'", var.name))
         }
         Expr::Unary(unary) => match unary.operator {
             UnaryOp::Negate | UnaryOp::Posate | UnaryOp::LogicalNot => Ok(Type::Int),
@@ -131,12 +139,11 @@ fn emit_lvalue<'ctx>(
     context: &'ctx Context,
     builder: &Builder<'ctx>,
     expr: &Expr,
-    variables: &HashMap<String, (Type, PointerValue<'ctx>)>,
+    variables: &[HashMap<String, (Type, PointerValue<'ctx>)>],
 ) -> Result<PointerValue<'ctx>, String> {
     match expr {
         Expr::Variable(var) => {
-            let (_, ptr) = variables
-                .get(&var.name)
+            let (_, ptr) = lookup_variable(&var.name, variables)
                 .ok_or_else(|| format!("undefined variable '{}'", var.name))?;
             Ok(*ptr)
         }
@@ -155,7 +162,7 @@ fn emit_expr<'ctx>(
     context: &'ctx Context,
     builder: &Builder<'ctx>,
     expr: &Expr,
-    variables: &HashMap<String, (Type, PointerValue<'ctx>)>,
+    variables: &[HashMap<String, (Type, PointerValue<'ctx>)>],
 ) -> Result<BasicValueEnum<'ctx>, String> {
     match expr {
         Expr::IntegerLiteral(integer) => {
@@ -164,8 +171,7 @@ fn emit_expr<'ctx>(
             ))
         }
         Expr::Variable(var) => {
-            let (ty, ptr) = variables
-                .get(&var.name)
+            let (ty, ptr) = lookup_variable(&var.name, variables)
                 .ok_or_else(|| format!("undefined variable '{}'", var.name))?;
             let llvm_ty = llvm_type(context, ty);
             builder
@@ -408,6 +414,205 @@ fn emit_expr<'ctx>(
     }
 }
 
+fn emit_statement<'ctx>(
+    context: &'ctx Context,
+    builder: &Builder<'ctx>,
+    statement: &Statement,
+    variables: &mut Vec<HashMap<String, (Type, PointerValue<'ctx>)>>,
+    ret_val_ptr: PointerValue<'ctx>,
+    return_bb: inkwell::basic_block::BasicBlock<'ctx>,
+) -> Result<(), String> {
+    match statement {
+        Statement::Declare(decl) => {
+            let init_val = emit_expr(context, builder, &decl.init, variables)?;
+            let llvm_ty = llvm_type(context, &decl.ty);
+            let alloca = builder
+                .build_alloca(llvm_ty, &decl.name)
+                .map_err(|err| format!("failed to build alloca: {err}"))?;
+            builder
+                .build_store(alloca, init_val)
+                .map_err(|err| format!("failed to build store: {err}"))?;
+            if let Some(top_scope) = variables.last_mut() {
+                top_scope.insert(decl.name.clone(), (decl.ty.clone(), alloca));
+            }
+        }
+        Statement::Assign(assign) => {
+            let val = emit_expr(context, builder, &assign.expr, variables)?;
+            let ptr = emit_lvalue(context, builder, &assign.target, variables)?;
+            builder
+                .build_store(ptr, val)
+                .map_err(|err| format!("failed to build store: {err}"))?;
+        }
+        Statement::Return(ret_stmt) => {
+            let val = emit_expr(context, builder, &ret_stmt.expr, variables)?;
+            let val_int = match val {
+                BasicValueEnum::IntValue(i) => i,
+                _ => return Err("function return value must be an integer".to_string()),
+            };
+            builder
+                .build_store(ret_val_ptr, val_int)
+                .map_err(|err| format!("failed to store return value: {err}"))?;
+            builder
+                .build_unconditional_branch(return_bb)
+                .map_err(|err| format!("failed to branch to return block: {err}"))?;
+        }
+        Statement::Block(body) => {
+            variables.push(HashMap::new());
+            for stmt in body {
+                if builder.get_insert_block().and_then(|bb| bb.get_terminator()).is_some() {
+                    break;
+                }
+                emit_statement(context, builder, stmt, variables, ret_val_ptr, return_bb)?;
+            }
+            variables.pop();
+        }
+        Statement::If(if_stmt) => {
+            let cond_val = emit_expr(context, builder, &if_stmt.cond, variables)?;
+            let cond_int = match cond_val {
+                BasicValueEnum::IntValue(i) => i,
+                _ => return Err("if condition must be an integer".to_string()),
+            };
+            let cond_is_true = builder
+                .build_int_compare(
+                    IntPredicate::NE,
+                    cond_int,
+                    context.i32_type().const_zero(),
+                    "ifcond",
+                )
+                .map_err(|err| err.to_string())?;
+
+            let start_bb = builder.get_insert_block().ok_or("no insert block")?;
+            let parent_func = start_bb.get_parent().ok_or("no parent function")?;
+
+            let then_bb = context.append_basic_block(parent_func, "then");
+            let else_bb = context.append_basic_block(parent_func, "else");
+            let merge_bb = context.append_basic_block(parent_func, "ifcont");
+
+            builder
+                .build_conditional_branch(cond_is_true, then_bb, else_bb)
+                .map_err(|err| err.to_string())?;
+
+            // Emit then branch
+            builder.position_at_end(then_bb);
+            emit_statement(context, builder, &if_stmt.then_branch, variables, ret_val_ptr, return_bb)?;
+            if builder.get_insert_block().and_then(|bb| bb.get_terminator()).is_none() {
+                builder.build_unconditional_branch(merge_bb).map_err(|err| err.to_string())?;
+            }
+
+            // Emit else branch
+            builder.position_at_end(else_bb);
+            if let Some(else_branch) = &if_stmt.else_branch {
+                emit_statement(context, builder, else_branch, variables, ret_val_ptr, return_bb)?;
+            }
+            if builder.get_insert_block().and_then(|bb| bb.get_terminator()).is_none() {
+                builder.build_unconditional_branch(merge_bb).map_err(|err| err.to_string())?;
+            }
+
+            // Move to merge block
+            builder.position_at_end(merge_bb);
+        }
+        Statement::While(while_stmt) => {
+            let start_bb = builder.get_insert_block().ok_or("no insert block")?;
+            let parent_func = start_bb.get_parent().ok_or("no parent function")?;
+
+            let cond_bb = context.append_basic_block(parent_func, "while.cond");
+            let body_bb = context.append_basic_block(parent_func, "while.body");
+            let merge_bb = context.append_basic_block(parent_func, "while.cont");
+
+            builder.build_unconditional_branch(cond_bb).map_err(|err| err.to_string())?;
+
+            // Cond block
+            builder.position_at_end(cond_bb);
+            let cond_val = emit_expr(context, builder, &while_stmt.cond, variables)?;
+            let cond_int = match cond_val {
+                BasicValueEnum::IntValue(i) => i,
+                _ => return Err("while condition must be an integer".to_string()),
+            };
+            let cond_is_true = builder
+                .build_int_compare(
+                    IntPredicate::NE,
+                    cond_int,
+                    context.i32_type().const_zero(),
+                    "whilecond",
+                )
+                .map_err(|err| err.to_string())?;
+            builder
+                .build_conditional_branch(cond_is_true, body_bb, merge_bb)
+                .map_err(|err| err.to_string())?;
+
+            // Body block
+            builder.position_at_end(body_bb);
+            emit_statement(context, builder, &while_stmt.body, variables, ret_val_ptr, return_bb)?;
+            if builder.get_insert_block().and_then(|bb| bb.get_terminator()).is_none() {
+                builder.build_unconditional_branch(cond_bb).map_err(|err| err.to_string())?;
+            }
+
+            // Continue from merge block
+            builder.position_at_end(merge_bb);
+        }
+        Statement::For(for_stmt) => {
+            variables.push(HashMap::new());
+
+            if let Some(init) = &for_stmt.init {
+                emit_statement(context, builder, init, variables, ret_val_ptr, return_bb)?;
+            }
+
+            let start_bb = builder.get_insert_block().ok_or("no insert block")?;
+            let parent_func = start_bb.get_parent().ok_or("no parent function")?;
+
+            let cond_bb = context.append_basic_block(parent_func, "for.cond");
+            let body_bb = context.append_basic_block(parent_func, "for.body");
+            let step_bb = context.append_basic_block(parent_func, "for.step");
+            let merge_bb = context.append_basic_block(parent_func, "for.cont");
+
+            builder.build_unconditional_branch(cond_bb).map_err(|err| err.to_string())?;
+
+            // Cond block
+            builder.position_at_end(cond_bb);
+            let cond_is_true = if let Some(cond_expr) = &for_stmt.cond {
+                let cond_val = emit_expr(context, builder, cond_expr, variables)?;
+                let cond_int = match cond_val {
+                    BasicValueEnum::IntValue(i) => i,
+                    _ => return Err("for condition must be an integer".to_string()),
+                };
+                builder
+                    .build_int_compare(
+                        IntPredicate::NE,
+                        cond_int,
+                        context.i32_type().const_zero(),
+                        "forcond",
+                    )
+                    .map_err(|err| err.to_string())?
+            } else {
+                context.bool_type().const_int(1, false)
+            };
+            builder
+                .build_conditional_branch(cond_is_true, body_bb, merge_bb)
+                .map_err(|err| err.to_string())?;
+
+            // Body block
+            builder.position_at_end(body_bb);
+            emit_statement(context, builder, &for_stmt.body, variables, ret_val_ptr, return_bb)?;
+            if builder.get_insert_block().and_then(|bb| bb.get_terminator()).is_none() {
+                builder.build_unconditional_branch(step_bb).map_err(|err| err.to_string())?;
+            }
+
+            // Step block
+            builder.position_at_end(step_bb);
+            if let Some(post) = &for_stmt.post {
+                emit_statement(context, builder, post, variables, ret_val_ptr, return_bb)?;
+            }
+            builder.build_unconditional_branch(cond_bb).map_err(|err| err.to_string())?;
+
+            // Continue from merge block
+            builder.position_at_end(merge_bb);
+
+            variables.pop();
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::generate_ir;
@@ -430,7 +635,8 @@ mod tests {
         let ir = generate_ir(&program).expect("should generate LLVM IR");
 
         assert!(ir.contains("define i32 @main()"));
-        assert!(ir.contains("ret i32 5"));
+        assert!(ir.contains("store i32 5, ptr %retval"));
+        assert!(ir.contains("ret i32"));
     }
 
     #[test]
@@ -455,7 +661,8 @@ mod tests {
         let ir = generate_ir(&program).expect("should generate LLVM IR");
 
         assert!(ir.contains("define i32 @main()"));
-        assert!(ir.contains("ret i32 12"));
+        assert!(ir.contains("store i32 12, ptr %retval"));
+        assert!(ir.contains("ret i32"));
     }
 
     #[test]
@@ -475,7 +682,8 @@ mod tests {
         let ir = generate_ir(&program).expect("should generate LLVM IR");
 
         assert!(ir.contains("define i32 @main()"));
-        assert!(ir.contains("ret i32 -5"));
+        assert!(ir.contains("store i32 -5, ptr %retval"));
+        assert!(ir.contains("ret i32"));
     }
 
     #[test]

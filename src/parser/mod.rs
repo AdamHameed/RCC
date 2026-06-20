@@ -1,7 +1,7 @@
 use crate::ast::{BinaryExpr, BinaryOp, UnaryExpr, UnaryOp};
 use crate::ast::{
     Expr, Function, IntegerLiteral, Program, ReturnStatement, Statement, VarAssignStatement,
-    VarDeclareStatement, VariableExpr, Type,
+    VarDeclareStatement, VariableExpr, Type, IfStatement, WhileStatement, ForStatement,
 };
 use crate::lexer::Token;
 
@@ -118,6 +118,76 @@ impl<'a> Parser<'a> {
                 self.expect_semicolon()?;
                 Ok(Statement::Declare(VarDeclareStatement { name, ty, init }))
             }
+            Some(Token::LeftBrace) => {
+                self.next();
+                let mut body = Vec::new();
+                while self.peek() != Some(&Token::RightBrace) {
+                    body.push(self.parse_statement()?);
+                }
+                self.expect_token(Token::RightBrace, "`}`")?;
+                Ok(Statement::Block(body))
+            }
+            Some(Token::If) => {
+                self.next();
+                self.expect_left_paren()?;
+                let cond = self.parse_expression()?;
+                self.expect_right_paren()?;
+                let then_branch = self.parse_statement()?;
+                let else_branch = if self.peek() == Some(&Token::Else) {
+                    self.next();
+                    Some(Box::new(self.parse_statement()?))
+                } else {
+                    None
+                };
+                Ok(Statement::If(IfStatement {
+                    cond,
+                    then_branch: Box::new(then_branch),
+                    else_branch,
+                }))
+            }
+            Some(Token::While) => {
+                self.next();
+                self.expect_left_paren()?;
+                let cond = self.parse_expression()?;
+                self.expect_right_paren()?;
+                let body = self.parse_statement()?;
+                Ok(Statement::While(WhileStatement {
+                    cond,
+                    body: Box::new(body),
+                }))
+            }
+            Some(Token::For) => {
+                self.next();
+                self.expect_left_paren()?;
+                let init = if self.peek() == Some(&Token::Semicolon) {
+                    self.next();
+                    None
+                } else {
+                    Some(Box::new(self.parse_statement()?))
+                };
+                let cond = if self.peek() == Some(&Token::Semicolon) {
+                    None
+                } else {
+                    Some(self.parse_expression()?)
+                };
+                self.expect_semicolon()?;
+                let post = if self.peek() == Some(&Token::RightParen) {
+                    None
+                } else {
+                    let target = self.parse_unary()?;
+                    self.expect_token(Token::Equals, "`=`")?;
+                    let expr = self.parse_expression()?;
+                    Some(Box::new(Statement::Assign(VarAssignStatement { target, expr })))
+                };
+                self.expect_right_paren()?;
+                let body = self.parse_statement()?;
+                Ok(Statement::For(ForStatement {
+                    init,
+                    cond,
+                    post,
+                    body: Box::new(body),
+                }))
+            }
             Some(_) => {
                 let target = self.parse_unary()?;
                 self.expect_token(Token::Equals, "`=`")?;
@@ -126,7 +196,7 @@ impl<'a> Parser<'a> {
                 Ok(Statement::Assign(VarAssignStatement { target, expr }))
             }
             None => Err(ParseError::UnexpectedToken {
-                expected: "statement (return, variable declaration, or assignment)",
+                expected: "statement (return, variable declaration, assignment, block, if, while, or for)",
                 found: None,
             }),
         }

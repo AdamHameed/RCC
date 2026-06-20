@@ -3,6 +3,10 @@ pub enum Token {
     Int,
     Void,
     Return,
+    If,
+    Else,
+    While,
+    For,
     Identifier(String),
     Plus,
     Minus,
@@ -161,6 +165,10 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, String> {
                     "int" => Token::Int,
                     "void" => Token::Void,
                     "return" => Token::Return,
+                    "if" => Token::If,
+                    "else" => Token::Else,
+                    "while" => Token::While,
+                    "for" => Token::For,
                     _ => Token::Identifier(ident),
                 };
 

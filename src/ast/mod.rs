@@ -20,6 +20,31 @@ pub enum Statement {
     Return(ReturnStatement),
     Declare(VarDeclareStatement),
     Assign(VarAssignStatement),
+    Block(Vec<Statement>),
+    If(IfStatement),
+    While(WhileStatement),
+    For(ForStatement),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IfStatement {
+    pub cond: Expr,
+    pub then_branch: Box<Statement>,
+    pub else_branch: Option<Box<Statement>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WhileStatement {
+    pub cond: Expr,
+    pub body: Box<Statement>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForStatement {
+    pub init: Option<Box<Statement>>,
+    pub cond: Option<Expr>,
+    pub post: Option<Box<Statement>>,
+    pub body: Box<Statement>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
