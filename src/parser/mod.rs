@@ -1,5 +1,8 @@
 use crate::ast::{BinaryExpr, BinaryOp, UnaryExpr, UnaryOp};
-use crate::ast::{Expr, Function, IntegerLiteral, Program, ReturnStatement, Statement};
+use crate::ast::{
+    Expr, Function, IntegerLiteral, Program, ReturnStatement, Statement, VarAssignStatement,
+    VarDeclareStatement, VariableExpr,
+};
 use crate::lexer::Token;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,18 +83,43 @@ impl<'a> Parser<'a> {
         }
 
         self.expect_left_brace()?;
-        let body = vec![self.parse_statement()?];
+        let mut body = Vec::new();
+        while self.peek() != Some(&Token::RightBrace) {
+            body.push(self.parse_statement()?);
+        }
         self.expect_right_brace()?;
 
         Ok(Function { name, body })
     }
 
     pub fn parse_statement(&mut self) -> Result<Statement, ParseError> {
-        self.expect_keyword_return()?;
-        let expr = self.parse_expression()?;
-        self.expect_semicolon()?;
-
-        Ok(Statement::Return(ReturnStatement { expr }))
+        match self.peek() {
+            Some(Token::Return) => {
+                self.next();
+                let expr = self.parse_expression()?;
+                self.expect_semicolon()?;
+                Ok(Statement::Return(ReturnStatement { expr }))
+            }
+            Some(Token::Int) => {
+                self.next();
+                let name = self.parse_identifier()?;
+                self.expect_token(Token::Equals, "`=`")?;
+                let init = self.parse_expression()?;
+                self.expect_semicolon()?;
+                Ok(Statement::Declare(VarDeclareStatement { name, init }))
+            }
+            Some(Token::Identifier(_)) => {
+                let name = self.parse_identifier()?;
+                self.expect_token(Token::Equals, "`=`")?;
+                let expr = self.parse_expression()?;
+                self.expect_semicolon()?;
+                Ok(Statement::Assign(VarAssignStatement { name, expr }))
+            }
+            other => Err(ParseError::UnexpectedToken {
+                expected: "statement (return, variable declaration, or assignment)",
+                found: other.cloned(),
+            }),
+        }
     }
 
     fn parse_expression(&mut self) -> Result<Expr, ParseError> {
@@ -167,6 +195,10 @@ impl<'a> Parser<'a> {
     fn parse_primary(&mut self) -> Result<Expr, ParseError> {
         match self.peek() {
             Some(Token::Integer(_)) => self.parse_integer_literal(),
+            Some(Token::Identifier(_)) => {
+                let name = self.parse_identifier()?;
+                Ok(Expr::Variable(VariableExpr { name }))
+            }
             Some(Token::LeftParen) => {
                 self.expect_left_paren()?;
                 let expr = self.parse_expression()?;
@@ -204,10 +236,6 @@ impl<'a> Parser<'a> {
 
     fn expect_keyword_int(&mut self) -> Result<(), ParseError> {
         self.expect_token(Token::Int, "`int`")
-    }
-
-    fn expect_keyword_return(&mut self) -> Result<(), ParseError> {
-        self.expect_token(Token::Return, "`return`")
     }
 
     fn expect_left_paren(&mut self) -> Result<(), ParseError> {
@@ -259,7 +287,7 @@ mod tests {
     use super::{ParseError, Parser, parse};
     use crate::ast::{
         BinaryExpr, BinaryOp, Expr, Function, IntegerLiteral, Program, ReturnStatement, Statement,
-        UnaryExpr, UnaryOp,
+        UnaryExpr, UnaryOp, VarAssignStatement, VarDeclareStatement, VariableExpr,
     };
     use crate::lexer::Token;
 
@@ -464,5 +492,59 @@ mod tests {
         let program = parse(&tokens).expect("parser should accept void parameter");
 
         assert_eq!(program.function.name, "main".to_string());
+    }
+
+    #[test]
+    fn parses_variable_declaration_and_assignment() {
+        let tokens = vec![
+            Token::Int,
+            Token::Identifier("main".to_string()),
+            Token::LeftParen,
+            Token::RightParen,
+            Token::LeftBrace,
+            Token::Int,
+            Token::Identifier("x".to_string()),
+            Token::Equals,
+            Token::Integer(5),
+            Token::Semicolon,
+            Token::Identifier("x".to_string()),
+            Token::Equals,
+            Token::Identifier("x".to_string()),
+            Token::Plus,
+            Token::Integer(2),
+            Token::Semicolon,
+            Token::Return,
+            Token::Identifier("x".to_string()),
+            Token::Semicolon,
+            Token::RightBrace,
+        ];
+
+        let program =
+            parse(&tokens).expect("parser should accept variables and multiple statements");
+
+        assert_eq!(
+            program.function.body,
+            vec![
+                Statement::Declare(VarDeclareStatement {
+                    name: "x".to_string(),
+                    init: Expr::IntegerLiteral(IntegerLiteral { value: 5 }),
+                }),
+                Statement::Assign(VarAssignStatement {
+                    name: "x".to_string(),
+                    expr: Expr::Binary(BinaryExpr {
+                        left: Box::new(Expr::Variable(VariableExpr {
+                            name: "x".to_string()
+                        })),
+                        operator: BinaryOp::Add,
+                        right: Box::new(Expr::IntegerLiteral(IntegerLiteral { value: 2 })),
+                    }),
+                }),
+                Statement::Return(ReturnStatement {
+                    expr: Expr::Variable(VariableExpr {
+                        name: "x".to_string()
+                    }),
+                }),
+            ]
+        );
     }
 }

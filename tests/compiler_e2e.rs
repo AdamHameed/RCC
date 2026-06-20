@@ -75,6 +75,19 @@ fn evaluates_unary_precedence() {
 }
 
 #[test]
+fn evaluates_variables() {
+    assert_program_exit_code(
+        "int main() {\n    int x = 10;\n    int y = 20;\n    x = x + y;\n    return x;\n}\n",
+        30,
+    );
+}
+
+#[test]
+fn evaluates_variable_negation() {
+    assert_program_exit_code("int main() {\n    int x = 5;\n    return -x;\n}\n", 251);
+}
+
+#[test]
 fn rejects_invalid_parameters() {
     let test_dir = make_test_dir();
     let input_path = test_dir.join("input.c");

@@ -3,7 +3,8 @@ use inkwell::OptimizationLevel;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetMachine};
-use inkwell::values::IntValue;
+use inkwell::values::{IntValue, PointerValue};
+use std::collections::HashMap;
 
 pub fn generate_ir(program: &Program) -> Result<String, String> {
     Target::initialize_native(&InitializationConfig::default())
@@ -37,13 +38,41 @@ pub fn generate_ir(program: &Program) -> Result<String, String> {
     let entry = context.append_basic_block(function, "entry");
     builder.position_at_end(entry);
 
-    let return_value = match program.function.body.first() {
-        Some(Statement::Return(return_stmt)) => emit_expr(&context, &builder, &return_stmt.expr)?,
-        None => i32_type.const_zero(),
-    };
+    let mut return_value = None;
+    let mut variables = HashMap::new();
 
+    for statement in &program.function.body {
+        match statement {
+            Statement::Declare(decl) => {
+                let init_val = emit_expr(&context, &builder, &decl.init, &variables)?;
+                let alloca = builder
+                    .build_alloca(i32_type, &decl.name)
+                    .map_err(|err| format!("failed to build alloca: {err}"))?;
+                builder
+                    .build_store(alloca, init_val)
+                    .map_err(|err| format!("failed to build store: {err}"))?;
+                variables.insert(decl.name.clone(), alloca);
+            }
+            Statement::Assign(assign) => {
+                let val = emit_expr(&context, &builder, &assign.expr, &variables)?;
+                let ptr = variables
+                    .get(&assign.name)
+                    .ok_or_else(|| format!("undefined variable '{}'", assign.name))?;
+                builder
+                    .build_store(*ptr, val)
+                    .map_err(|err| format!("failed to build store: {err}"))?;
+            }
+            Statement::Return(ret_stmt) => {
+                let val = emit_expr(&context, &builder, &ret_stmt.expr, &variables)?;
+                return_value = Some(val);
+                break;
+            }
+        }
+    }
+
+    let return_val = return_value.unwrap_or_else(|| i32_type.const_zero());
     builder
-        .build_return(Some(&return_value))
+        .build_return(Some(&return_val))
         .map_err(|err| format!("failed to build return instruction: {err}"))?;
 
     if module.verify().is_err() {
@@ -57,13 +86,28 @@ fn emit_expr<'ctx>(
     context: &'ctx Context,
     builder: &Builder<'ctx>,
     expr: &Expr,
+    variables: &HashMap<String, PointerValue<'ctx>>,
 ) -> Result<IntValue<'ctx>, String> {
     match expr {
         Expr::IntegerLiteral(integer) => {
             Ok(context.i32_type().const_int(integer.value as u64, true))
         }
+        Expr::Variable(var) => {
+            let ptr = variables
+                .get(&var.name)
+                .ok_or_else(|| format!("undefined variable '{}'", var.name))?;
+            builder
+                .build_load(context.i32_type(), *ptr, &var.name)
+                .map_err(|err| {
+                    format!(
+                        "failed to build load instruction for variable '{}': {err}",
+                        var.name
+                    )
+                })
+                .map(|v| v.into_int_value())
+        }
         Expr::Unary(unary) => {
-            let operand = emit_expr(context, builder, &unary.expr)?;
+            let operand = emit_expr(context, builder, &unary.expr, variables)?;
             match unary.operator {
                 UnaryOp::Negate => builder
                     .build_int_neg(operand, "negtmp")
@@ -72,8 +116,8 @@ fn emit_expr<'ctx>(
             }
         }
         Expr::Binary(binary) => {
-            let left = emit_expr(context, builder, &binary.left)?;
-            let right = emit_expr(context, builder, &binary.right)?;
+            let left = emit_expr(context, builder, &binary.left, variables)?;
+            let right = emit_expr(context, builder, &binary.right, variables)?;
 
             match binary.operator {
                 BinaryOp::Add => builder
@@ -98,7 +142,7 @@ mod tests {
     use super::generate_ir;
     use crate::ast::{
         BinaryExpr, BinaryOp, Expr, Function, IntegerLiteral, Program, ReturnStatement, Statement,
-        UnaryExpr, UnaryOp,
+        UnaryExpr, UnaryOp, VarAssignStatement, VarDeclareStatement, VariableExpr,
     };
 
     #[test]
@@ -161,5 +205,44 @@ mod tests {
 
         assert!(ir.contains("define i32 @main()"));
         assert!(ir.contains("ret i32 -5"));
+    }
+
+    #[test]
+    fn generates_llvm_ir_for_variables() {
+        let program = Program {
+            function: Function {
+                name: "main".to_string(),
+                body: vec![
+                    Statement::Declare(VarDeclareStatement {
+                        name: "x".to_string(),
+                        init: Expr::IntegerLiteral(IntegerLiteral { value: 42 }),
+                    }),
+                    Statement::Assign(VarAssignStatement {
+                        name: "x".to_string(),
+                        expr: Expr::Binary(BinaryExpr {
+                            left: Box::new(Expr::Variable(VariableExpr {
+                                name: "x".to_string(),
+                            })),
+                            operator: BinaryOp::Add,
+                            right: Box::new(Expr::IntegerLiteral(IntegerLiteral { value: 10 })),
+                        }),
+                    }),
+                    Statement::Return(ReturnStatement {
+                        expr: Expr::Variable(VariableExpr {
+                            name: "x".to_string(),
+                        }),
+                    }),
+                ],
+            },
+        };
+
+        let ir = generate_ir(&program).expect("should generate LLVM IR");
+
+        assert!(ir.contains("define i32 @main()"));
+        assert!(ir.contains("%x = alloca i32"));
+        assert!(ir.contains("store i32 42, ptr %x"));
+        assert!(ir.contains("load i32, ptr %x"));
+        assert!(ir.contains("store i32"));
+        assert!(ir.contains("ret i32"));
     }
 }
