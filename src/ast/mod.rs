@@ -61,6 +61,7 @@ pub struct UnaryExpr {
 pub enum UnaryOp {
     Negate,
     Posate,
+    LogicalNot,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,6 +77,14 @@ pub enum BinaryOp {
     Subtract,
     Multiply,
     Divide,
+    Equal,
+    NotEqual,
+    LessThan,
+    LessEqual,
+    GreaterThan,
+    GreaterEqual,
+    LogicalAnd,
+    LogicalOr,
 }
 
 // TODO: Add source spans to AST nodes for richer diagnostics.
