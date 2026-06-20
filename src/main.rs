@@ -90,10 +90,13 @@ fn run() -> Result<(), String> {
 
 fn find_system_compiler() -> Result<&'static str, String> {
     for compiler in ["clang", "gcc"] {
-        if let Ok(output) = Command::new(compiler).arg("--version").output() {
-            if output.status.success() {
-                return Ok(compiler);
-            }
+        if Command::new(compiler)
+            .arg("--version")
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+        {
+            return Ok(compiler);
         }
     }
 
