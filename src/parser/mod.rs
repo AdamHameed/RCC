@@ -190,12 +190,8 @@ impl<'a> Parser<'a> {
                     None
                 } else {
                     let target = self.parse_unary()?;
-                    self.expect_token(Token::Equals, "`=`")?;
-                    let expr = self.parse_expression()?;
-                    Some(Box::new(Statement::Assign(VarAssignStatement {
-                        target,
-                        expr,
-                    })))
+                    let assign = self.parse_assignment(target)?;
+                    Some(Box::new(Statement::Assign(assign)))
                 };
                 self.expect_right_paren()?;
                 let body = self.parse_statement()?;
@@ -208,16 +204,38 @@ impl<'a> Parser<'a> {
             }
             Some(_) => {
                 let target = self.parse_unary()?;
-                self.expect_token(Token::Equals, "`=`")?;
-                let expr = self.parse_expression()?;
+                let assign = self.parse_assignment(target)?;
                 self.expect_semicolon()?;
-                Ok(Statement::Assign(VarAssignStatement { target, expr }))
+                Ok(Statement::Assign(assign))
             }
             None => Err(ParseError::UnexpectedToken {
                 expected: "statement (return, variable declaration, assignment, block, if, while, or for)",
                 found: None,
             }),
         }
+    }
+
+    /// Parses the `= expr` / `op= expr` tail of an assignment statement,
+    /// given the already-parsed assignment target.
+    fn parse_assignment(&mut self, target: Expr) -> Result<VarAssignStatement, ParseError> {
+        let op = match self.peek() {
+            Some(Token::Equals) => None,
+            Some(Token::PlusEqual) => Some(BinaryOp::Add),
+            Some(Token::MinusEqual) => Some(BinaryOp::Subtract),
+            Some(Token::StarEqual) => Some(BinaryOp::Multiply),
+            Some(Token::SlashEqual) => Some(BinaryOp::Divide),
+            Some(Token::PercentEqual) => Some(BinaryOp::Modulo),
+            other => {
+                return Err(ParseError::UnexpectedToken {
+                    expected: "`=`, `+=`, `-=`, `*=`, `/=`, or `%=`",
+                    found: other.cloned(),
+                });
+            }
+        };
+        self.next();
+
+        let expr = self.parse_expression()?;
+        Ok(VarAssignStatement { target, op, expr })
     }
 
     fn parse_expression(&mut self) -> Result<Expr, ParseError> {
@@ -776,6 +794,7 @@ mod tests {
                     target: Expr::Variable(VariableExpr {
                         name: "x".to_string(),
                     }),
+                    op: None,
                     expr: Expr::Binary(BinaryExpr {
                         left: Box::new(Expr::Variable(VariableExpr {
                             name: "x".to_string()
@@ -790,6 +809,43 @@ mod tests {
                     }),
                 }),
             ]
+        );
+    }
+
+    #[test]
+    fn parses_compound_assignment() {
+        let tokens = vec![
+            Token::Int,
+            Token::Identifier("main".to_string()),
+            Token::LeftParen,
+            Token::RightParen,
+            Token::LeftBrace,
+            Token::Int,
+            Token::Identifier("x".to_string()),
+            Token::Equals,
+            Token::Integer(5),
+            Token::Semicolon,
+            Token::Identifier("x".to_string()),
+            Token::PlusEqual,
+            Token::Integer(2),
+            Token::Semicolon,
+            Token::Return,
+            Token::Identifier("x".to_string()),
+            Token::Semicolon,
+            Token::RightBrace,
+        ];
+
+        let program = parse(&tokens).expect("parser should accept compound assignment");
+
+        assert_eq!(
+            program.functions[0].body[1],
+            Statement::Assign(VarAssignStatement {
+                target: Expr::Variable(VariableExpr {
+                    name: "x".to_string(),
+                }),
+                op: Some(BinaryOp::Add),
+                expr: Expr::IntegerLiteral(IntegerLiteral { value: 2 }),
+            })
         );
     }
 
