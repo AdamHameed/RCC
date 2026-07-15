@@ -118,6 +118,7 @@ pub fn generate_ir(program: &Program) -> Result<String, String> {
                 return_bb,
                 &function_types,
                 &module,
+                None,
             )?;
         }
 
@@ -594,6 +595,14 @@ fn emit_expr<'ctx>(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Branch targets for `continue` and `break` inside the innermost loop.
+#[derive(Clone, Copy)]
+struct LoopContext<'ctx> {
+    continue_bb: inkwell::basic_block::BasicBlock<'ctx>,
+    break_bb: inkwell::basic_block::BasicBlock<'ctx>,
+}
+
+#[allow(clippy::too_many_arguments)]
 fn emit_statement<'ctx>(
     context: &'ctx Context,
     builder: &Builder<'ctx>,
@@ -603,6 +612,7 @@ fn emit_statement<'ctx>(
     return_bb: inkwell::basic_block::BasicBlock<'ctx>,
     function_types: &HashMap<String, Type>,
     module: &inkwell::module::Module<'ctx>,
+    loop_ctx: Option<LoopContext<'ctx>>,
 ) -> Result<(), String> {
     match statement {
         Statement::Declare(decl) => {
@@ -713,6 +723,7 @@ fn emit_statement<'ctx>(
                     return_bb,
                     function_types,
                     module,
+                    loop_ctx,
                 )?;
             }
             variables.pop();
@@ -761,6 +772,7 @@ fn emit_statement<'ctx>(
                 return_bb,
                 function_types,
                 module,
+                loop_ctx,
             )?;
             if builder
                 .get_insert_block()
@@ -784,6 +796,7 @@ fn emit_statement<'ctx>(
                     return_bb,
                     function_types,
                     module,
+                    loop_ctx,
                 )?;
             }
             if builder
@@ -848,6 +861,10 @@ fn emit_statement<'ctx>(
                 return_bb,
                 function_types,
                 module,
+                Some(LoopContext {
+                    continue_bb: cond_bb,
+                    break_bb: merge_bb,
+                }),
             )?;
             if builder
                 .get_insert_block()
@@ -875,6 +892,7 @@ fn emit_statement<'ctx>(
                     return_bb,
                     function_types,
                     module,
+                    loop_ctx,
                 )?;
             }
 
@@ -931,6 +949,10 @@ fn emit_statement<'ctx>(
                 return_bb,
                 function_types,
                 module,
+                Some(LoopContext {
+                    continue_bb: step_bb,
+                    break_bb: merge_bb,
+                }),
             )?;
             if builder
                 .get_insert_block()
@@ -954,6 +976,7 @@ fn emit_statement<'ctx>(
                     return_bb,
                     function_types,
                     module,
+                    loop_ctx,
                 )?;
             }
             builder
@@ -964,6 +987,18 @@ fn emit_statement<'ctx>(
             builder.position_at_end(merge_bb);
 
             variables.pop();
+        }
+        Statement::Break => {
+            let ctx = loop_ctx.ok_or("`break` used outside of a loop")?;
+            builder
+                .build_unconditional_branch(ctx.break_bb)
+                .map_err(|err| format!("failed to emit break branch: {err}"))?;
+        }
+        Statement::Continue => {
+            let ctx = loop_ctx.ok_or("`continue` used outside of a loop")?;
+            builder
+                .build_unconditional_branch(ctx.continue_bb)
+                .map_err(|err| format!("failed to emit continue branch: {err}"))?;
         }
     }
     Ok(())

@@ -32,6 +32,8 @@ pub enum Statement {
     If(IfStatement),
     While(WhileStatement),
     For(ForStatement),
+    Break,
+    Continue,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

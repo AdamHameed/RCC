@@ -206,6 +206,16 @@ impl<'a> Parser<'a> {
                     body: Box::new(body),
                 }))
             }
+            Some(Token::Break) => {
+                self.next();
+                self.expect_semicolon()?;
+                Ok(Statement::Break)
+            }
+            Some(Token::Continue) => {
+                self.next();
+                self.expect_semicolon()?;
+                Ok(Statement::Continue)
+            }
             Some(_) => {
                 let statement = self.parse_assignment_statement()?;
                 self.expect_semicolon()?;
