@@ -195,7 +195,9 @@ fn type_of_expr(
             found.ok_or_else(|| format!("undefined variable '{}'", var.name))
         }
         Expr::Unary(unary) => match unary.operator {
-            UnaryOp::Negate | UnaryOp::Posate | UnaryOp::LogicalNot => Ok(Type::Int),
+            UnaryOp::Negate | UnaryOp::Posate | UnaryOp::LogicalNot | UnaryOp::BitNot => {
+                Ok(Type::Int)
+            }
             UnaryOp::Deref => {
                 let inner_ty = type_of_expr(&unary.expr, variables, function_types)?;
                 match inner_ty {
@@ -313,7 +315,7 @@ fn emit_expr<'ctx>(
                 )?;
                 Ok(BasicValueEnum::PointerValue(ptr))
             }
-            UnaryOp::Negate | UnaryOp::Posate | UnaryOp::LogicalNot => {
+            UnaryOp::Negate | UnaryOp::Posate | UnaryOp::LogicalNot | UnaryOp::BitNot => {
                 let operand = emit_expr(
                     context,
                     builder,
@@ -342,6 +344,9 @@ fn emit_expr<'ctx>(
                             .build_int_z_extend(cmp, context.i32_type(), "casttmp")
                             .map_err(|err| format!("failed to emit zext for logical not: {err}"))?
                     }
+                    UnaryOp::BitNot => builder
+                        .build_not(operand_int, "bnottmp")
+                        .map_err(|err| format!("failed to emit not instruction: {err}"))?,
                     _ => unreachable!(),
                 };
                 Ok(BasicValueEnum::IntValue(res))
@@ -549,6 +554,22 @@ fn emit_expr<'ctx>(
                     BinaryOp::Modulo => builder
                         .build_int_signed_rem(left, right, "remtmp")
                         .map_err(|err| format!("failed to emit rem instruction: {err}"))?,
+                    BinaryOp::BitAnd => builder
+                        .build_and(left, right, "andtmp")
+                        .map_err(|err| format!("failed to emit and instruction: {err}"))?,
+                    BinaryOp::BitOr => builder
+                        .build_or(left, right, "ortmp")
+                        .map_err(|err| format!("failed to emit or instruction: {err}"))?,
+                    BinaryOp::BitXor => builder
+                        .build_xor(left, right, "xortmp")
+                        .map_err(|err| format!("failed to emit xor instruction: {err}"))?,
+                    BinaryOp::ShiftLeft => builder
+                        .build_left_shift(left, right, "shltmp")
+                        .map_err(|err| format!("failed to emit shl instruction: {err}"))?,
+                    BinaryOp::ShiftRight => builder
+                        // Arithmetic shift: C's >> on signed ints preserves the sign bit
+                        .build_right_shift(left, right, true, "ashrtmp")
+                        .map_err(|err| format!("failed to emit ashr instruction: {err}"))?,
                     BinaryOp::Equal
                     | BinaryOp::NotEqual
                     | BinaryOp::LessThan

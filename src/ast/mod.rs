@@ -122,6 +122,7 @@ pub enum UnaryOp {
     Negate,
     Posate,
     LogicalNot,
+    BitNot,
     Deref,
     AddrOf,
 }
@@ -148,6 +149,11 @@ pub enum BinaryOp {
     GreaterEqual,
     LogicalAnd,
     LogicalOr,
+    BitAnd,
+    BitOr,
+    BitXor,
+    ShiftLeft,
+    ShiftRight,
 }
 
 // TODO: Add source spans to AST nodes for richer diagnostics.
