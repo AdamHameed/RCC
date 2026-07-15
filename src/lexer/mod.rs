@@ -7,6 +7,8 @@ pub enum Token {
     Else,
     While,
     For,
+    Break,
+    Continue,
     Identifier(String),
     Plus,
     Minus,
@@ -245,6 +247,8 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, String> {
                     "else" => Token::Else,
                     "while" => Token::While,
                     "for" => Token::For,
+                    "break" => Token::Break,
+                    "continue" => Token::Continue,
                     _ => Token::Identifier(ident),
                 };
 
@@ -422,6 +426,21 @@ mod tests {
                 Token::StarEqual,
                 Token::SlashEqual,
                 Token::PercentEqual,
+            ]
+        );
+    }
+
+    #[test]
+    fn tokenizes_break_and_continue_keywords() {
+        let tokens = tokenize("break; continue;").expect("tokenization should succeed");
+
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Break,
+                Token::Semicolon,
+                Token::Continue,
+                Token::Semicolon,
             ]
         );
     }

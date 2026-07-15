@@ -34,6 +34,45 @@ fn evaluates_division_and_subtraction() {
 }
 
 #[test]
+fn evaluates_break_in_while_loop() {
+    assert_program_exit_code(
+        "int main() { int x = 0; while (1) { x++; if (x == 7) { break; } } return x; }\n",
+        7,
+    );
+}
+
+#[test]
+fn evaluates_continue_in_for_loop() {
+    assert_program_exit_code(
+        "int main() { int total = 0; for (int i = 0; i < 10; i++) { if (i % 2 == 0) { continue; } total += i; } return total; }\n",
+        25,
+    );
+}
+
+#[test]
+fn break_applies_to_innermost_loop() {
+    assert_program_exit_code(
+        "int main() { int count = 0; for (int i = 0; i < 3; i++) { while (1) { break; } count++; } return count; }\n",
+        3,
+    );
+}
+
+#[test]
+fn rejects_break_outside_loop() {
+    let test_dir = make_test_dir();
+    let input_path = test_dir.join("input.c");
+    fs::write(&input_path, "int main() { break; return 0; }\n").expect("should write input");
+    let compile_output = Command::new(COMPILER_BIN)
+        .arg(&input_path)
+        .current_dir(&test_dir)
+        .output()
+        .expect("should invoke compiler");
+    assert!(!compile_output.status.success());
+    let stderr = String::from_utf8_lossy(&compile_output.stderr);
+    assert!(stderr.contains("`break` used outside of a loop"));
+}
+
+#[test]
 fn evaluates_increment_and_decrement_statements() {
     assert_program_exit_code(
         "int main() { int x = 5; x++; ++x; x--; --x; x++; return x; }\n",
