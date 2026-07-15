@@ -15,6 +15,8 @@ pub enum Token {
     Percent,
     PlusEqual,
     MinusEqual,
+    PlusPlus,
+    MinusMinus,
     StarEqual,
     SlashEqual,
     PercentEqual,
@@ -51,20 +53,30 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, String> {
         match ch {
             '+' => {
                 chars.next();
-                if chars.peek() == Some(&'=') {
-                    chars.next();
-                    tokens.push(Token::PlusEqual);
-                } else {
-                    tokens.push(Token::Plus);
+                match chars.peek() {
+                    Some(&'=') => {
+                        chars.next();
+                        tokens.push(Token::PlusEqual);
+                    }
+                    Some(&'+') => {
+                        chars.next();
+                        tokens.push(Token::PlusPlus);
+                    }
+                    _ => tokens.push(Token::Plus),
                 }
             }
             '-' => {
                 chars.next();
-                if chars.peek() == Some(&'=') {
-                    chars.next();
-                    tokens.push(Token::MinusEqual);
-                } else {
-                    tokens.push(Token::Minus);
+                match chars.peek() {
+                    Some(&'=') => {
+                        chars.next();
+                        tokens.push(Token::MinusEqual);
+                    }
+                    Some(&'-') => {
+                        chars.next();
+                        tokens.push(Token::MinusMinus);
+                    }
+                    _ => tokens.push(Token::Minus),
                 }
             }
             '*' => {
@@ -410,6 +422,23 @@ mod tests {
                 Token::StarEqual,
                 Token::SlashEqual,
                 Token::PercentEqual,
+            ]
+        );
+    }
+
+    #[test]
+    fn tokenizes_increment_and_decrement_operators() {
+        let tokens = tokenize("++ -- + + - -").expect("tokenization should succeed");
+
+        assert_eq!(
+            tokens,
+            vec![
+                Token::PlusPlus,
+                Token::MinusMinus,
+                Token::Plus,
+                Token::Plus,
+                Token::Minus,
+                Token::Minus,
             ]
         );
     }

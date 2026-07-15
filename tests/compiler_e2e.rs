@@ -34,6 +34,22 @@ fn evaluates_division_and_subtraction() {
 }
 
 #[test]
+fn evaluates_increment_and_decrement_statements() {
+    assert_program_exit_code(
+        "int main() { int x = 5; x++; ++x; x--; --x; x++; return x; }\n",
+        6,
+    );
+}
+
+#[test]
+fn evaluates_increment_in_for_post() {
+    assert_program_exit_code(
+        "int main() { int total = 0; for (int i = 0; i < 5; i++) { total += i; } return total; }\n",
+        10,
+    );
+}
+
+#[test]
 fn evaluates_compound_assignments() {
     assert_program_exit_code(
         "int main() { int x = 10; x += 5; x -= 3; x *= 4; x /= 6; x %= 5; return x; }\n",
