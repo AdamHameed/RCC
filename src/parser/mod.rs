@@ -339,6 +339,7 @@ impl<'a> Parser<'a> {
             let operator = match self.peek() {
                 Some(Token::Star) => BinaryOp::Multiply,
                 Some(Token::Slash) => BinaryOp::Divide,
+                Some(Token::Percent) => BinaryOp::Modulo,
                 _ => break,
             };
             self.next();
