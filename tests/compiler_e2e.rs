@@ -34,6 +34,42 @@ fn evaluates_division_and_subtraction() {
 }
 
 #[test]
+fn evaluates_bitwise_operators() {
+    assert_program_exit_code("int main() { return 12 & 10; }\n", 8);
+    assert_program_exit_code("int main() { return 12 | 10; }\n", 14);
+    assert_program_exit_code("int main() { return 12 ^ 10; }\n", 6);
+    assert_program_exit_code("int main() { return 1 << 5; }\n", 32);
+    assert_program_exit_code("int main() { return 64 >> 3; }\n", 8);
+    // ~5 = -6, which is 250 as an exit code
+    assert_program_exit_code("int main() { return ~5; }\n", 250);
+}
+
+#[test]
+fn right_shift_is_arithmetic() {
+    // -8 >> 1 must sign-extend to -4 (252 as an exit code), not 2147483644.
+    assert_program_exit_code("int main() { int x = -8; return (x >> 1) + 256; }\n", 252);
+}
+
+#[test]
+fn bitwise_operators_follow_c_precedence() {
+    // Shift binds tighter than relational: (1 << 3) > 7 is true.
+    assert_program_exit_code("int main() { return 1 << 3 > 7; }\n", 1);
+    // Equality binds tighter than &: 4 & (3 == 3) = 4 & 1 = 0.
+    assert_program_exit_code("int main() { return 4 & 3 == 3; }\n", 0);
+    // & binds tighter than ^ binds tighter than |: 1 | (2 ^ (6 & 3)) = 1 | 0 = 1... check with clang: 6&3=2, 2^2=0, 1|0=1.
+    assert_program_exit_code("int main() { return 1 | 2 ^ 6 & 3; }\n", 1);
+}
+
+#[test]
+fn evaluates_bit_manipulation_program() {
+    // Count set bits of 203 (11001011 -> 5 bits).
+    assert_program_exit_code(
+        "int popcount(int v) { int count = 0; while (v != 0) { count += v & 1; v = v >> 1; } return count; }\nint main() { return popcount(203); }\n",
+        5,
+    );
+}
+
+#[test]
 fn evaluates_ternary_conditional() {
     assert_program_exit_code("int main() { return 1 ? 10 : 20; }\n", 10);
     assert_program_exit_code("int main() { return 0 ? 10 : 20; }\n", 20);

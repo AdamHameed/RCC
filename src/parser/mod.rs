@@ -334,12 +334,12 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_logical_and(&mut self) -> Result<Expr, ParseError> {
-        let mut expr = self.parse_equality()?;
+        let mut expr = self.parse_bit_or()?;
 
         loop {
             if self.peek() == Some(&Token::AndAnd) {
                 self.next();
-                let right = self.parse_equality()?;
+                let right = self.parse_bit_or()?;
                 expr = Expr::Binary(BinaryExpr {
                     left: Box::new(expr),
                     operator: BinaryOp::LogicalAnd,
@@ -348,6 +348,54 @@ impl<'a> Parser<'a> {
             } else {
                 break;
             }
+        }
+
+        Ok(expr)
+    }
+
+    fn parse_bit_or(&mut self) -> Result<Expr, ParseError> {
+        let mut expr = self.parse_bit_xor()?;
+
+        while self.peek() == Some(&Token::Pipe) {
+            self.next();
+            let right = self.parse_bit_xor()?;
+            expr = Expr::Binary(BinaryExpr {
+                left: Box::new(expr),
+                operator: BinaryOp::BitOr,
+                right: Box::new(right),
+            });
+        }
+
+        Ok(expr)
+    }
+
+    fn parse_bit_xor(&mut self) -> Result<Expr, ParseError> {
+        let mut expr = self.parse_bit_and()?;
+
+        while self.peek() == Some(&Token::Caret) {
+            self.next();
+            let right = self.parse_bit_and()?;
+            expr = Expr::Binary(BinaryExpr {
+                left: Box::new(expr),
+                operator: BinaryOp::BitXor,
+                right: Box::new(right),
+            });
+        }
+
+        Ok(expr)
+    }
+
+    fn parse_bit_and(&mut self) -> Result<Expr, ParseError> {
+        let mut expr = self.parse_equality()?;
+
+        while self.peek() == Some(&Token::Ampersand) {
+            self.next();
+            let right = self.parse_equality()?;
+            expr = Expr::Binary(BinaryExpr {
+                left: Box::new(expr),
+                operator: BinaryOp::BitAnd,
+                right: Box::new(right),
+            });
         }
 
         Ok(expr)
@@ -376,7 +424,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_relational(&mut self) -> Result<Expr, ParseError> {
-        let mut expr = self.parse_additive()?;
+        let mut expr = self.parse_shift()?;
 
         loop {
             let operator = match self.peek() {
@@ -384,6 +432,28 @@ impl<'a> Parser<'a> {
                 Some(Token::LessEqual) => BinaryOp::LessEqual,
                 Some(Token::GreaterThan) => BinaryOp::GreaterThan,
                 Some(Token::GreaterEqual) => BinaryOp::GreaterEqual,
+                _ => break,
+            };
+            self.next();
+
+            let right = self.parse_shift()?;
+            expr = Expr::Binary(BinaryExpr {
+                left: Box::new(expr),
+                operator,
+                right: Box::new(right),
+            });
+        }
+
+        Ok(expr)
+    }
+
+    fn parse_shift(&mut self) -> Result<Expr, ParseError> {
+        let mut expr = self.parse_additive()?;
+
+        loop {
+            let operator = match self.peek() {
+                Some(Token::LessLess) => BinaryOp::ShiftLeft,
+                Some(Token::GreaterGreater) => BinaryOp::ShiftRight,
                 _ => break,
             };
             self.next();
@@ -467,6 +537,14 @@ impl<'a> Parser<'a> {
                 let expr = self.parse_unary()?;
                 Ok(Expr::Unary(UnaryExpr {
                     operator: UnaryOp::LogicalNot,
+                    expr: Box::new(expr),
+                }))
+            }
+            Some(Token::Tilde) => {
+                self.next();
+                let expr = self.parse_unary()?;
+                Ok(Expr::Unary(UnaryExpr {
+                    operator: UnaryOp::BitNot,
                     expr: Box::new(expr),
                 }))
             }
@@ -980,6 +1058,83 @@ mod tests {
 
         let error = parse(&tokens).expect_err("parser should reject `*p++`");
         assert_eq!(error, ParseError::InvalidIncrementTarget);
+    }
+
+    #[test]
+    fn bitwise_operators_follow_c_precedence() {
+        // `1 & 2 == 2` must parse as `1 & (2 == 2)` — equality binds tighter
+        // than `&` in C.
+        let tokens = vec![
+            Token::Int,
+            Token::Identifier("main".to_string()),
+            Token::LeftParen,
+            Token::RightParen,
+            Token::LeftBrace,
+            Token::Return,
+            Token::Integer(1),
+            Token::Ampersand,
+            Token::Integer(2),
+            Token::EqualEqual,
+            Token::Integer(2),
+            Token::Semicolon,
+            Token::RightBrace,
+        ];
+
+        let program = parse(&tokens).expect("parser should accept bitwise expression");
+
+        assert_eq!(
+            program.functions[0].body[0],
+            Statement::Return(ReturnStatement {
+                expr: Expr::Binary(BinaryExpr {
+                    left: Box::new(Expr::IntegerLiteral(IntegerLiteral { value: 1 })),
+                    operator: BinaryOp::BitAnd,
+                    right: Box::new(Expr::Binary(BinaryExpr {
+                        left: Box::new(Expr::IntegerLiteral(IntegerLiteral { value: 2 })),
+                        operator: BinaryOp::Equal,
+                        right: Box::new(Expr::IntegerLiteral(IntegerLiteral { value: 2 })),
+                    })),
+                }),
+            })
+        );
+    }
+
+    #[test]
+    fn parses_bitand_of_address_of() {
+        // `x & &y` must lex as two Ampersands and parse as BitAnd(x, AddrOf(y)).
+        let tokens = vec![
+            Token::Int,
+            Token::Identifier("main".to_string()),
+            Token::LeftParen,
+            Token::RightParen,
+            Token::LeftBrace,
+            Token::Return,
+            Token::Identifier("x".to_string()),
+            Token::Ampersand,
+            Token::Ampersand,
+            Token::Identifier("y".to_string()),
+            Token::Semicolon,
+            Token::RightBrace,
+        ];
+
+        let program = parse(&tokens).expect("parser should accept `x & &y`");
+
+        assert_eq!(
+            program.functions[0].body[0],
+            Statement::Return(ReturnStatement {
+                expr: Expr::Binary(BinaryExpr {
+                    left: Box::new(Expr::Variable(VariableExpr {
+                        name: "x".to_string(),
+                    })),
+                    operator: BinaryOp::BitAnd,
+                    right: Box::new(Expr::Unary(UnaryExpr {
+                        operator: UnaryOp::AddrOf,
+                        expr: Box::new(Expr::Variable(VariableExpr {
+                            name: "y".to_string(),
+                        })),
+                    })),
+                }),
+            })
+        );
     }
 
     #[test]
