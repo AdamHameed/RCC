@@ -88,6 +88,26 @@ fn evaluates_variable_negation() {
 }
 
 #[test]
+fn evaluates_comparisons() {
+    assert_program_exit_code("int main() { return 5 < 10; }\n", 1);
+    assert_program_exit_code("int main() { return 5 > 10; }\n", 0);
+    assert_program_exit_code("int main() { return 5 == 5; }\n", 1);
+    assert_program_exit_code("int main() { return 5 != 5; }\n", 0);
+    assert_program_exit_code("int main() { return 5 <= 5; }\n", 1);
+    assert_program_exit_code("int main() { return 5 >= 6; }\n", 0);
+}
+
+#[test]
+fn evaluates_logical_operators() {
+    assert_program_exit_code("int main() { return 1 && 2; }\n", 1);
+    assert_program_exit_code("int main() { return 1 && 0; }\n", 0);
+    assert_program_exit_code("int main() { return 0 || 2; }\n", 1);
+    assert_program_exit_code("int main() { return 0 || 0; }\n", 0);
+    assert_program_exit_code("int main() { return !5; }\n", 0);
+    assert_program_exit_code("int main() { return !0; }\n", 1);
+}
+
+#[test]
 fn rejects_invalid_parameters() {
     let test_dir = make_test_dir();
     let input_path = test_dir.join("input.c");

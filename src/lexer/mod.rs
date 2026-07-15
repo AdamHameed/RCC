@@ -14,6 +14,15 @@ pub enum Token {
     RightBrace,
     Semicolon,
     Equals,
+    EqualEqual,
+    NotEqual,
+    LessThan,
+    LessEqual,
+    GreaterThan,
+    GreaterEqual,
+    AndAnd,
+    OrOr,
+    Exclamation,
     Integer(i32),
 }
 
@@ -66,7 +75,57 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, String> {
             }
             '=' => {
                 chars.next();
-                tokens.push(Token::Equals);
+                if chars.peek() == Some(&'=') {
+                    chars.next();
+                    tokens.push(Token::EqualEqual);
+                } else {
+                    tokens.push(Token::Equals);
+                }
+            }
+            '!' => {
+                chars.next();
+                if chars.peek() == Some(&'=') {
+                    chars.next();
+                    tokens.push(Token::NotEqual);
+                } else {
+                    tokens.push(Token::Exclamation);
+                }
+            }
+            '<' => {
+                chars.next();
+                if chars.peek() == Some(&'=') {
+                    chars.next();
+                    tokens.push(Token::LessEqual);
+                } else {
+                    tokens.push(Token::LessThan);
+                }
+            }
+            '>' => {
+                chars.next();
+                if chars.peek() == Some(&'=') {
+                    chars.next();
+                    tokens.push(Token::GreaterEqual);
+                } else {
+                    tokens.push(Token::GreaterThan);
+                }
+            }
+            '&' => {
+                chars.next();
+                if chars.peek() == Some(&'&') {
+                    chars.next();
+                    tokens.push(Token::AndAnd);
+                } else {
+                    return Err("expected '&' after '&'".to_string());
+                }
+            }
+            '|' => {
+                chars.next();
+                if chars.peek() == Some(&'|') {
+                    chars.next();
+                    tokens.push(Token::OrOr);
+                } else {
+                    return Err("expected '|' after '|'".to_string());
+                }
             }
             '0'..='9' => {
                 let mut number = String::new();
@@ -213,6 +272,26 @@ mod tests {
                 Token::Integer(0),
                 Token::Semicolon,
                 Token::RightBrace,
+            ]
+        );
+    }
+
+    #[test]
+    fn tokenizes_relational_and_logical_operators() {
+        let source = "== != < <= > >= && || !";
+        let tokens = tokenize(source).expect("should succeed");
+        assert_eq!(
+            tokens,
+            vec![
+                Token::EqualEqual,
+                Token::NotEqual,
+                Token::LessThan,
+                Token::LessEqual,
+                Token::GreaterThan,
+                Token::GreaterEqual,
+                Token::AndAnd,
+                Token::OrOr,
+                Token::Exclamation,
             ]
         );
     }

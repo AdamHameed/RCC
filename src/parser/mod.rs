@@ -123,7 +123,93 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_expression(&mut self) -> Result<Expr, ParseError> {
-        self.parse_additive()
+        self.parse_logical_or()
+    }
+
+    fn parse_logical_or(&mut self) -> Result<Expr, ParseError> {
+        let mut expr = self.parse_logical_and()?;
+
+        loop {
+            if self.peek() == Some(&Token::OrOr) {
+                self.next();
+                let right = self.parse_logical_and()?;
+                expr = Expr::Binary(BinaryExpr {
+                    left: Box::new(expr),
+                    operator: BinaryOp::LogicalOr,
+                    right: Box::new(right),
+                });
+            } else {
+                break;
+            }
+        }
+
+        Ok(expr)
+    }
+
+    fn parse_logical_and(&mut self) -> Result<Expr, ParseError> {
+        let mut expr = self.parse_equality()?;
+
+        loop {
+            if self.peek() == Some(&Token::AndAnd) {
+                self.next();
+                let right = self.parse_equality()?;
+                expr = Expr::Binary(BinaryExpr {
+                    left: Box::new(expr),
+                    operator: BinaryOp::LogicalAnd,
+                    right: Box::new(right),
+                });
+            } else {
+                break;
+            }
+        }
+
+        Ok(expr)
+    }
+
+    fn parse_equality(&mut self) -> Result<Expr, ParseError> {
+        let mut expr = self.parse_relational()?;
+
+        loop {
+            let operator = match self.peek() {
+                Some(Token::EqualEqual) => BinaryOp::Equal,
+                Some(Token::NotEqual) => BinaryOp::NotEqual,
+                _ => break,
+            };
+            self.next();
+
+            let right = self.parse_relational()?;
+            expr = Expr::Binary(BinaryExpr {
+                left: Box::new(expr),
+                operator,
+                right: Box::new(right),
+            });
+        }
+
+        Ok(expr)
+    }
+
+    fn parse_relational(&mut self) -> Result<Expr, ParseError> {
+        let mut expr = self.parse_additive()?;
+
+        loop {
+            let operator = match self.peek() {
+                Some(Token::LessThan) => BinaryOp::LessThan,
+                Some(Token::LessEqual) => BinaryOp::LessEqual,
+                Some(Token::GreaterThan) => BinaryOp::GreaterThan,
+                Some(Token::GreaterEqual) => BinaryOp::GreaterEqual,
+                _ => break,
+            };
+            self.next();
+
+            let right = self.parse_additive()?;
+            expr = Expr::Binary(BinaryExpr {
+                left: Box::new(expr),
+                operator,
+                right: Box::new(right),
+            });
+        }
+
+        Ok(expr)
     }
 
     fn parse_additive(&mut self) -> Result<Expr, ParseError> {
@@ -185,6 +271,14 @@ impl<'a> Parser<'a> {
                 let expr = self.parse_unary()?;
                 Ok(Expr::Unary(UnaryExpr {
                     operator: UnaryOp::Posate,
+                    expr: Box::new(expr),
+                }))
+            }
+            Some(Token::Exclamation) => {
+                self.next();
+                let expr = self.parse_unary()?;
+                Ok(Expr::Unary(UnaryExpr {
+                    operator: UnaryOp::LogicalNot,
                     expr: Box::new(expr),
                 }))
             }
@@ -545,6 +639,46 @@ mod tests {
                     }),
                 }),
             ]
+        );
+    }
+
+    #[test]
+    fn parses_comparisons_and_logical_operators() {
+        let tokens = vec![
+            Token::Int,
+            Token::Identifier("main".to_string()),
+            Token::LeftParen,
+            Token::RightParen,
+            Token::LeftBrace,
+            Token::Return,
+            Token::Integer(1),
+            Token::LessThan,
+            Token::Integer(2),
+            Token::AndAnd,
+            Token::Exclamation,
+            Token::Integer(0),
+            Token::Semicolon,
+            Token::RightBrace,
+        ];
+
+        let program = parse(&tokens).expect("should parse logic ops");
+
+        assert_eq!(
+            program.function.body,
+            vec![Statement::Return(ReturnStatement {
+                expr: Expr::Binary(BinaryExpr {
+                    left: Box::new(Expr::Binary(BinaryExpr {
+                        left: Box::new(Expr::IntegerLiteral(IntegerLiteral { value: 1 })),
+                        operator: BinaryOp::LessThan,
+                        right: Box::new(Expr::IntegerLiteral(IntegerLiteral { value: 2 })),
+                    })),
+                    operator: BinaryOp::LogicalAnd,
+                    right: Box::new(Expr::Unary(UnaryExpr {
+                        operator: UnaryOp::LogicalNot,
+                        expr: Box::new(Expr::IntegerLiteral(IntegerLiteral { value: 0 })),
+                    })),
+                }),
+            })]
         );
     }
 }
