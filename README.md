@@ -6,21 +6,24 @@ RCC is a small Rust-based C compiler project for a minimal subset of C. It lexes
 
 Current support is intentionally small:
 
-- `int main() { return <expr>; }`
+- `int main()` or `int main(void)` function declaration
 - integer literals
+- unary arithmetic:
+  - `+` (positive)
+  - `-` (negation)
 - binary arithmetic:
-  - `+`
-  - `-`
-  - `*`
-  - `/`
+  - `+` (addition)
+  - `-` (subtraction)
+  - `*` (multiplication)
+  - `/` (division)
 - parentheses for grouping
 
 Examples:
 
 ```c
-int main() { return 5; }
-int main() { return 2 + 3; }
-int main() { return 4 * (2 + 1); }
+int main(void) { return -5; }
+int main() { return 2 + 3 * 4; }
+int main() { return 4 * (2 - -1); }
 ```
 
 ## Project Layout
@@ -64,18 +67,20 @@ The compiler binary is named `compiler`.
 Compile a C file:
 
 ```bash
-cargo run --bin compiler -- samples/return_5.c
+cargo run --bin compiler -- samples/return_5.c -o my_output
 ```
 
 This produces:
 
-- `output.ll` - generated LLVM IR
-- `output` - compiled executable
+- `my_output.ll` - generated LLVM IR
+- `my_output` - compiled executable
+
+If the `-o` option is omitted, it defaults to producing `output` and `output.ll` in the current working directory.
 
 Run the produced executable and inspect its return code:
 
 ```bash
-./output
+./my_output
 echo $?
 ```
 

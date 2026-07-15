@@ -22,12 +22,25 @@ pub struct ReturnStatement {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
     IntegerLiteral(IntegerLiteral),
+    Unary(UnaryExpr),
     Binary(BinaryExpr),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IntegerLiteral {
     pub value: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnaryExpr {
+    pub operator: UnaryOp,
+    pub expr: Box<Expr>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnaryOp {
+    Negate,
+    Posate,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

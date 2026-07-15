@@ -1,4 +1,4 @@
-use crate::ast::{BinaryExpr, BinaryOp};
+use crate::ast::{BinaryExpr, BinaryOp, UnaryExpr, UnaryOp};
 use crate::ast::{Expr, Function, IntegerLiteral, Program, ReturnStatement, Statement};
 use crate::lexer::Token;
 
@@ -62,7 +62,23 @@ impl<'a> Parser<'a> {
         self.expect_keyword_int()?;
         let name = self.parse_identifier()?;
         self.expect_left_paren()?;
-        self.expect_right_paren()?;
+
+        match self.peek() {
+            Some(Token::Void) => {
+                self.next();
+                self.expect_right_paren()?;
+            }
+            Some(Token::RightParen) => {
+                self.next();
+            }
+            other => {
+                return Err(ParseError::UnexpectedToken {
+                    expected: "`)` or `void`",
+                    found: other.cloned(),
+                });
+            }
+        }
+
         self.expect_left_brace()?;
         let body = vec![self.parse_statement()?];
         self.expect_right_brace()?;
@@ -105,7 +121,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_multiplicative(&mut self) -> Result<Expr, ParseError> {
-        let mut expr = self.parse_primary()?;
+        let mut expr = self.parse_unary()?;
 
         loop {
             let operator = match self.peek() {
@@ -115,7 +131,7 @@ impl<'a> Parser<'a> {
             };
             self.next();
 
-            let right = self.parse_primary()?;
+            let right = self.parse_unary()?;
             expr = Expr::Binary(BinaryExpr {
                 left: Box::new(expr),
                 operator,
@@ -124,6 +140,28 @@ impl<'a> Parser<'a> {
         }
 
         Ok(expr)
+    }
+
+    fn parse_unary(&mut self) -> Result<Expr, ParseError> {
+        match self.peek() {
+            Some(Token::Minus) => {
+                self.next();
+                let expr = self.parse_unary()?;
+                Ok(Expr::Unary(UnaryExpr {
+                    operator: UnaryOp::Negate,
+                    expr: Box::new(expr),
+                }))
+            }
+            Some(Token::Plus) => {
+                self.next();
+                let expr = self.parse_unary()?;
+                Ok(Expr::Unary(UnaryExpr {
+                    operator: UnaryOp::Posate,
+                    expr: Box::new(expr),
+                }))
+            }
+            _ => self.parse_primary(),
+        }
     }
 
     fn parse_primary(&mut self) -> Result<Expr, ParseError> {
@@ -221,6 +259,7 @@ mod tests {
     use super::{ParseError, Parser, parse};
     use crate::ast::{
         BinaryExpr, BinaryOp, Expr, Function, IntegerLiteral, Program, ReturnStatement, Statement,
+        UnaryExpr, UnaryOp,
     };
     use crate::lexer::Token;
 
@@ -373,5 +412,57 @@ mod tests {
                 }),
             })]
         );
+    }
+
+    #[test]
+    fn parses_unary_expressions() {
+        let tokens = vec![
+            Token::Int,
+            Token::Identifier("main".to_string()),
+            Token::LeftParen,
+            Token::RightParen,
+            Token::LeftBrace,
+            Token::Return,
+            Token::Minus,
+            Token::Plus,
+            Token::Integer(5),
+            Token::Semicolon,
+            Token::RightBrace,
+        ];
+
+        let program = parse(&tokens).expect("parser should accept unary ops");
+
+        assert_eq!(
+            program.function.body,
+            vec![Statement::Return(ReturnStatement {
+                expr: Expr::Unary(UnaryExpr {
+                    operator: UnaryOp::Negate,
+                    expr: Box::new(Expr::Unary(UnaryExpr {
+                        operator: UnaryOp::Posate,
+                        expr: Box::new(Expr::IntegerLiteral(IntegerLiteral { value: 5 })),
+                    })),
+                }),
+            })]
+        );
+    }
+
+    #[test]
+    fn parses_void_parameter() {
+        let tokens = vec![
+            Token::Int,
+            Token::Identifier("main".to_string()),
+            Token::LeftParen,
+            Token::Void,
+            Token::RightParen,
+            Token::LeftBrace,
+            Token::Return,
+            Token::Integer(0),
+            Token::Semicolon,
+            Token::RightBrace,
+        ];
+
+        let program = parse(&tokens).expect("parser should accept void parameter");
+
+        assert_eq!(program.function.name, "main".to_string());
     }
 }
