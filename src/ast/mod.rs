@@ -70,6 +70,8 @@ pub struct VarDeclareStatement {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VarAssignStatement {
     pub target: Expr,
+    /// Compound operator for `+=`, `-=`, `*=`, `/=`, `%=`; `None` for plain `=`.
+    pub op: Option<BinaryOp>,
     pub expr: Expr,
 }
 

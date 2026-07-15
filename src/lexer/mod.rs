@@ -13,6 +13,11 @@ pub enum Token {
     Star,
     Slash,
     Percent,
+    PlusEqual,
+    MinusEqual,
+    StarEqual,
+    SlashEqual,
+    PercentEqual,
     LeftParen,
     RightParen,
     LeftBrace,
@@ -46,15 +51,30 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, String> {
         match ch {
             '+' => {
                 chars.next();
-                tokens.push(Token::Plus);
+                if chars.peek() == Some(&'=') {
+                    chars.next();
+                    tokens.push(Token::PlusEqual);
+                } else {
+                    tokens.push(Token::Plus);
+                }
             }
             '-' => {
                 chars.next();
-                tokens.push(Token::Minus);
+                if chars.peek() == Some(&'=') {
+                    chars.next();
+                    tokens.push(Token::MinusEqual);
+                } else {
+                    tokens.push(Token::Minus);
+                }
             }
             '*' => {
                 chars.next();
-                tokens.push(Token::Star);
+                if chars.peek() == Some(&'=') {
+                    chars.next();
+                    tokens.push(Token::StarEqual);
+                } else {
+                    tokens.push(Token::Star);
+                }
             }
             '/' => {
                 chars.next();
@@ -82,12 +102,21 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, String> {
                             return Err("unterminated block comment".to_string());
                         }
                     }
+                    Some(&'=') => {
+                        chars.next();
+                        tokens.push(Token::SlashEqual);
+                    }
                     _ => tokens.push(Token::Slash),
                 }
             }
             '%' => {
                 chars.next();
-                tokens.push(Token::Percent);
+                if chars.peek() == Some(&'=') {
+                    chars.next();
+                    tokens.push(Token::PercentEqual);
+                } else {
+                    tokens.push(Token::Percent);
+                }
             }
             '(' => {
                 chars.next();
@@ -367,6 +396,22 @@ mod tests {
         let error = tokenize("int main() { /* never closed").expect_err("should fail");
 
         assert!(error.contains("unterminated block comment"));
+    }
+
+    #[test]
+    fn tokenizes_compound_assignment_operators() {
+        let tokens = tokenize("+= -= *= /= %=").expect("tokenization should succeed");
+
+        assert_eq!(
+            tokens,
+            vec![
+                Token::PlusEqual,
+                Token::MinusEqual,
+                Token::StarEqual,
+                Token::SlashEqual,
+                Token::PercentEqual,
+            ]
+        );
     }
 
     #[test]

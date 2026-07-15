@@ -642,6 +642,34 @@ fn emit_statement<'ctx>(
                 function_types,
                 module,
             )?;
+            let val = if let Some(op) = assign.op {
+                let target_ty = type_of_expr(&assign.target, variables, function_types)?;
+                if target_ty != Type::Int {
+                    return Err("compound assignment is only supported for int".to_string());
+                }
+                let rhs = match val {
+                    BasicValueEnum::IntValue(i) => i,
+                    _ => {
+                        return Err("compound assignment operand must be an integer".to_string());
+                    }
+                };
+                let current = builder
+                    .build_load(context.i32_type(), ptr, "loadtmp")
+                    .map_err(|err| format!("failed to load assignment target: {err}"))?
+                    .into_int_value();
+                let combined = match op {
+                    BinaryOp::Add => builder.build_int_add(current, rhs, "addtmp"),
+                    BinaryOp::Subtract => builder.build_int_sub(current, rhs, "subtmp"),
+                    BinaryOp::Multiply => builder.build_int_mul(current, rhs, "multmp"),
+                    BinaryOp::Divide => builder.build_int_signed_div(current, rhs, "divtmp"),
+                    BinaryOp::Modulo => builder.build_int_signed_rem(current, rhs, "remtmp"),
+                    _ => return Err(format!("unsupported compound assignment operator {op:?}")),
+                }
+                .map_err(|err| format!("failed to emit compound assignment: {err}"))?;
+                combined.into()
+            } else {
+                val
+            };
             builder
                 .build_store(ptr, val)
                 .map_err(|err| format!("failed to build store: {err}"))?;
@@ -1037,6 +1065,7 @@ mod tests {
                         target: Expr::Variable(VariableExpr {
                             name: "x".to_string(),
                         }),
+                        op: None,
                         expr: Expr::Binary(BinaryExpr {
                             left: Box::new(Expr::Variable(VariableExpr {
                                 name: "x".to_string(),

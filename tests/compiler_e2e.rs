@@ -34,6 +34,30 @@ fn evaluates_division_and_subtraction() {
 }
 
 #[test]
+fn evaluates_compound_assignments() {
+    assert_program_exit_code(
+        "int main() { int x = 10; x += 5; x -= 3; x *= 4; x /= 6; x %= 5; return x; }\n",
+        3,
+    );
+}
+
+#[test]
+fn evaluates_compound_assignment_through_pointer() {
+    assert_program_exit_code(
+        "int main() { int x = 40; int *p = &x; *p += 2; return x; }\n",
+        42,
+    );
+}
+
+#[test]
+fn evaluates_compound_assignment_in_for_post() {
+    assert_program_exit_code(
+        "int main() { int total = 0; for (int i = 1; i <= 4; i += 1) { total += i; } return total; }\n",
+        10,
+    );
+}
+
+#[test]
 fn evaluates_modulo() {
     assert_program_exit_code("int main() { return 17 % 5; }\n", 2);
 }
