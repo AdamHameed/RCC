@@ -13,7 +13,10 @@ pub enum ParseError {
         found: Option<Token>,
     },
     #[allow(dead_code)]
-    TrailingTokens { found: Token },
+    TrailingTokens {
+        found: Token,
+    },
+    InvalidIncrementTarget,
 }
 
 impl std::fmt::Display for ParseError {
@@ -24,6 +27,9 @@ impl std::fmt::Display for ParseError {
             }
             Self::TrailingTokens { found } => {
                 write!(f, "unexpected trailing token after program: {found:?}")
+            }
+            Self::InvalidIncrementTarget => {
+                write!(f, "`++`/`--` target must be a variable")
             }
         }
     }
@@ -189,9 +195,7 @@ impl<'a> Parser<'a> {
                 let post = if self.peek() == Some(&Token::RightParen) {
                     None
                 } else {
-                    let target = self.parse_unary()?;
-                    let assign = self.parse_assignment(target)?;
-                    Some(Box::new(Statement::Assign(assign)))
+                    Some(Box::new(self.parse_assignment_statement()?))
                 };
                 self.expect_right_paren()?;
                 let body = self.parse_statement()?;
@@ -203,16 +207,53 @@ impl<'a> Parser<'a> {
                 }))
             }
             Some(_) => {
-                let target = self.parse_unary()?;
-                let assign = self.parse_assignment(target)?;
+                let statement = self.parse_assignment_statement()?;
                 self.expect_semicolon()?;
-                Ok(Statement::Assign(assign))
+                Ok(statement)
             }
             None => Err(ParseError::UnexpectedToken {
                 expected: "statement (return, variable declaration, assignment, block, if, while, or for)",
                 found: None,
             }),
         }
+    }
+
+    /// Parses an assignment-like statement without its trailing semicolon:
+    /// a prefix/postfix increment/decrement or a (compound) assignment.
+    fn parse_assignment_statement(&mut self) -> Result<Statement, ParseError> {
+        if let Some(op) = self.peek_increment_op() {
+            self.next();
+            let target = self.parse_unary()?;
+            return Ok(Statement::Assign(Self::increment_assignment(target, op)?));
+        }
+
+        let target = self.parse_unary()?;
+        if let Some(op) = self.peek_increment_op() {
+            self.next();
+            return Ok(Statement::Assign(Self::increment_assignment(target, op)?));
+        }
+
+        Ok(Statement::Assign(self.parse_assignment(target)?))
+    }
+
+    fn peek_increment_op(&self) -> Option<BinaryOp> {
+        match self.peek() {
+            Some(Token::PlusPlus) => Some(BinaryOp::Add),
+            Some(Token::MinusMinus) => Some(BinaryOp::Subtract),
+            _ => None,
+        }
+    }
+
+    /// Desugars `++x` / `x++` / `--x` / `x--` into `x += 1` / `x -= 1`.
+    fn increment_assignment(target: Expr, op: BinaryOp) -> Result<VarAssignStatement, ParseError> {
+        if !matches!(target, Expr::Variable(_)) {
+            return Err(ParseError::InvalidIncrementTarget);
+        }
+        Ok(VarAssignStatement {
+            target,
+            op: Some(op),
+            expr: Expr::IntegerLiteral(IntegerLiteral { value: 1 }),
+        })
     }
 
     /// Parses the `= expr` / `op= expr` tail of an assignment statement,
@@ -847,6 +888,68 @@ mod tests {
                 expr: Expr::IntegerLiteral(IntegerLiteral { value: 2 }),
             })
         );
+    }
+
+    #[test]
+    fn parses_increment_and_decrement_statements() {
+        let tokens = vec![
+            Token::Int,
+            Token::Identifier("main".to_string()),
+            Token::LeftParen,
+            Token::RightParen,
+            Token::LeftBrace,
+            Token::Int,
+            Token::Identifier("x".to_string()),
+            Token::Equals,
+            Token::Integer(5),
+            Token::Semicolon,
+            Token::Identifier("x".to_string()),
+            Token::PlusPlus,
+            Token::Semicolon,
+            Token::MinusMinus,
+            Token::Identifier("x".to_string()),
+            Token::Semicolon,
+            Token::Return,
+            Token::Identifier("x".to_string()),
+            Token::Semicolon,
+            Token::RightBrace,
+        ];
+
+        let program = parse(&tokens).expect("parser should accept increment statements");
+
+        let expected_incdec = |op| {
+            Statement::Assign(VarAssignStatement {
+                target: Expr::Variable(VariableExpr {
+                    name: "x".to_string(),
+                }),
+                op: Some(op),
+                expr: Expr::IntegerLiteral(IntegerLiteral { value: 1 }),
+            })
+        };
+        assert_eq!(program.functions[0].body[1], expected_incdec(BinaryOp::Add));
+        assert_eq!(
+            program.functions[0].body[2],
+            expected_incdec(BinaryOp::Subtract)
+        );
+    }
+
+    #[test]
+    fn rejects_increment_of_non_variable() {
+        let tokens = vec![
+            Token::Int,
+            Token::Identifier("main".to_string()),
+            Token::LeftParen,
+            Token::RightParen,
+            Token::LeftBrace,
+            Token::Star,
+            Token::Identifier("p".to_string()),
+            Token::PlusPlus,
+            Token::Semicolon,
+            Token::RightBrace,
+        ];
+
+        let error = parse(&tokens).expect_err("parser should reject `*p++`");
+        assert_eq!(error, ParseError::InvalidIncrementTarget);
     }
 
     #[test]
