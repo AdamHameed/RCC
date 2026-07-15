@@ -61,7 +61,7 @@ fn rejects_non_main_function() {
         .expect("should invoke compiler");
     assert!(!compile_output.status.success());
     let stderr = String::from_utf8_lossy(&compile_output.stderr);
-    assert!(stderr.contains("expected function name to be 'main'"));
+    assert!(stderr.contains("expected a function named 'main'"));
 }
 
 #[test]
@@ -175,7 +175,7 @@ fn evaluates_double_pointer() {
 fn rejects_invalid_parameters() {
     let test_dir = make_test_dir();
     let input_path = test_dir.join("input.c");
-    fs::write(&input_path, "int main(int x) { return 0; }\n").expect("should write input");
+    fs::write(&input_path, "int main(int x y) { return 0; }\n").expect("should write input");
     let compile_output = Command::new(COMPILER_BIN)
         .arg(&input_path)
         .current_dir(&test_dir)
@@ -183,7 +183,7 @@ fn rejects_invalid_parameters() {
         .expect("should invoke compiler");
     assert!(!compile_output.status.success());
     let stderr = String::from_utf8_lossy(&compile_output.stderr);
-    assert!(stderr.contains("expected `)` or `void`"));
+    assert!(stderr.contains("expected `,` or `)`"));
 }
 
 fn assert_program_exit_code(source: &str, expected_exit_code: i32) {

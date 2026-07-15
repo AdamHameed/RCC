@@ -52,12 +52,11 @@ fn run() -> Result<(), String> {
     log_step("parsing tokens");
     let program = parser::parse(&tokens).map_err(|err| err.to_string())?;
 
-    // Validate that the defined function is named "main"
-    if program.function.name != "main" {
-        return Err(format!(
-            "expected function name to be 'main', found '{}' (rcc only supports compiling programs with a 'main' entrypoint)",
-            program.function.name
-        ));
+    // Validate that a function named "main" exists
+    if !program.functions.iter().any(|f| f.name == "main") {
+        return Err(
+            "expected a function named 'main' (rcc requires a 'main' entrypoint)".to_string(),
+        );
     }
 
     log_step("generating LLVM IR");

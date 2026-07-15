@@ -28,6 +28,7 @@ pub enum Token {
     OrOr,
     Exclamation,
     Ampersand,
+    Comma,
     Integer(i32),
 }
 
@@ -73,6 +74,10 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, String> {
             '}' => {
                 chars.next();
                 tokens.push(Token::RightBrace);
+            }
+            ',' => {
+                chars.next();
+                tokens.push(Token::Comma);
             }
             ';' => {
                 chars.next();
