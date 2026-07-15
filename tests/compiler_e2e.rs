@@ -34,6 +34,34 @@ fn evaluates_division_and_subtraction() {
 }
 
 #[test]
+fn evaluates_ternary_conditional() {
+    assert_program_exit_code("int main() { return 1 ? 10 : 20; }\n", 10);
+    assert_program_exit_code("int main() { return 0 ? 10 : 20; }\n", 20);
+}
+
+#[test]
+fn evaluates_chained_ternary_right_associativity() {
+    assert_program_exit_code(
+        "int main() { int x = 2; return x == 1 ? 10 : x == 2 ? 20 : 30; }\n",
+        20,
+    );
+}
+
+#[test]
+fn ternary_evaluates_only_taken_branch() {
+    // The untaken branch divides by zero; lazy evaluation means no trap.
+    assert_program_exit_code("int main() { int zero = 0; return 0 ? 5 / zero : 7; }\n", 7);
+}
+
+#[test]
+fn evaluates_ternary_with_calls_and_assignment() {
+    assert_program_exit_code(
+        "int max(int a, int b) { return a > b ? a : b; }\nint main() { int m = max(3, 9); m += 1 ? 2 : 100; return m; }\n",
+        11,
+    );
+}
+
+#[test]
 fn evaluates_break_in_while_loop() {
     assert_program_exit_code(
         "int main() { int x = 0; while (1) { x++; if (x == 7) { break; } } return x; }\n",

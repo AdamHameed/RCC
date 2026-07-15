@@ -215,6 +215,9 @@ fn type_of_expr(
                 .ok_or_else(|| format!("undefined function '{}'", call.name))?;
             Ok(ret_ty.clone())
         }
+        Expr::Conditional(conditional) => {
+            type_of_expr(&conditional.then_expr, variables, function_types)
+        }
     }
 }
 
@@ -591,10 +594,83 @@ fn emit_expr<'ctx>(
             };
             Ok(call_val)
         }
+        Expr::Conditional(conditional) => {
+            let cond_val = emit_expr(
+                context,
+                builder,
+                &conditional.cond,
+                variables,
+                function_types,
+                module,
+            )?;
+            let cond_int = match cond_val {
+                BasicValueEnum::IntValue(i) => i,
+                _ => return Err("ternary condition must be an integer".to_string()),
+            };
+            let cond_is_true = builder
+                .build_int_compare(
+                    IntPredicate::NE,
+                    cond_int,
+                    context.i32_type().const_zero(),
+                    "ternarycond",
+                )
+                .map_err(|err| err.to_string())?;
+
+            let start_bb = builder.get_insert_block().ok_or("no insert block")?;
+            let parent_func = start_bb.get_parent().ok_or("no parent function")?;
+
+            let then_bb = context.append_basic_block(parent_func, "ternary.then");
+            let else_bb = context.append_basic_block(parent_func, "ternary.else");
+            let merge_bb = context.append_basic_block(parent_func, "ternary.merge");
+
+            builder
+                .build_conditional_branch(cond_is_true, then_bb, else_bb)
+                .map_err(|err| err.to_string())?;
+
+            // Then branch (only evaluated when the condition is true)
+            builder.position_at_end(then_bb);
+            let then_val = emit_expr(
+                context,
+                builder,
+                &conditional.then_expr,
+                variables,
+                function_types,
+                module,
+            )?;
+            builder
+                .build_unconditional_branch(merge_bb)
+                .map_err(|err| err.to_string())?;
+            let actual_then_bb = builder.get_insert_block().ok_or("no insert block")?;
+
+            // Else branch (only evaluated when the condition is false)
+            builder.position_at_end(else_bb);
+            let else_val = emit_expr(
+                context,
+                builder,
+                &conditional.else_expr,
+                variables,
+                function_types,
+                module,
+            )?;
+            builder
+                .build_unconditional_branch(merge_bb)
+                .map_err(|err| err.to_string())?;
+            let actual_else_bb = builder.get_insert_block().ok_or("no insert block")?;
+
+            if then_val.get_type() != else_val.get_type() {
+                return Err("ternary branches must have the same type".to_string());
+            }
+
+            builder.position_at_end(merge_bb);
+            let phi = builder
+                .build_phi(then_val.get_type(), "ternary.result")
+                .map_err(|err| err.to_string())?;
+            phi.add_incoming(&[(&then_val, actual_then_bb), (&else_val, actual_else_bb)]);
+            Ok(phi.as_basic_value())
+        }
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 /// Branch targets for `continue` and `break` inside the innermost loop.
 #[derive(Clone, Copy)]
 struct LoopContext<'ctx> {

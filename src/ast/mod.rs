@@ -84,6 +84,15 @@ pub enum Expr {
     Unary(UnaryExpr),
     Binary(BinaryExpr),
     Call(FunctionCallExpr),
+    Conditional(ConditionalExpr),
+}
+
+/// Ternary conditional expression: `cond ? then_expr : else_expr`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConditionalExpr {
+    pub cond: Box<Expr>,
+    pub then_expr: Box<Expr>,
+    pub else_expr: Box<Expr>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
