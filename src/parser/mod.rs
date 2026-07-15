@@ -1,7 +1,7 @@
 use crate::ast::{BinaryExpr, BinaryOp, UnaryExpr, UnaryOp};
 use crate::ast::{
-    Expr, ForStatement, Function, FunctionCallExpr, IfStatement, IntegerLiteral, Parameter,
-    Program, ReturnStatement, Statement, Type, VarAssignStatement, VarDeclareStatement,
+    ConditionalExpr, Expr, ForStatement, Function, FunctionCallExpr, IfStatement, IntegerLiteral,
+    Parameter, Program, ReturnStatement, Statement, Type, VarAssignStatement, VarDeclareStatement,
     VariableExpr, WhileStatement,
 };
 use crate::lexer::Token;
@@ -290,7 +290,27 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_expression(&mut self) -> Result<Expr, ParseError> {
-        self.parse_logical_or()
+        self.parse_conditional()
+    }
+
+    fn parse_conditional(&mut self) -> Result<Expr, ParseError> {
+        let cond = self.parse_logical_or()?;
+
+        if self.peek() != Some(&Token::Question) {
+            return Ok(cond);
+        }
+        self.next();
+
+        let then_expr = self.parse_expression()?;
+        self.expect_token(Token::Colon, "`:`")?;
+        // Right-associative: `a ? b : c ? d : e` is `a ? b : (c ? d : e)`.
+        let else_expr = self.parse_conditional()?;
+
+        Ok(Expr::Conditional(ConditionalExpr {
+            cond: Box::new(cond),
+            then_expr: Box::new(then_expr),
+            else_expr: Box::new(else_expr),
+        }))
     }
 
     fn parse_logical_or(&mut self) -> Result<Expr, ParseError> {
@@ -592,9 +612,9 @@ impl<'a> Parser<'a> {
 mod tests {
     use super::{ParseError, Parser, parse};
     use crate::ast::{
-        BinaryExpr, BinaryOp, Expr, Function, FunctionCallExpr, IntegerLiteral, Parameter, Program,
-        ReturnStatement, Statement, Type, UnaryExpr, UnaryOp, VarAssignStatement,
-        VarDeclareStatement, VariableExpr,
+        BinaryExpr, BinaryOp, ConditionalExpr, Expr, Function, FunctionCallExpr, IntegerLiteral,
+        Parameter, Program, ReturnStatement, Statement, Type, UnaryExpr, UnaryOp,
+        VarAssignStatement, VarDeclareStatement, VariableExpr,
     };
     use crate::lexer::Token;
 
@@ -960,6 +980,38 @@ mod tests {
 
         let error = parse(&tokens).expect_err("parser should reject `*p++`");
         assert_eq!(error, ParseError::InvalidIncrementTarget);
+    }
+
+    #[test]
+    fn parses_ternary_conditional() {
+        let tokens = vec![
+            Token::Int,
+            Token::Identifier("main".to_string()),
+            Token::LeftParen,
+            Token::RightParen,
+            Token::LeftBrace,
+            Token::Return,
+            Token::Integer(1),
+            Token::Question,
+            Token::Integer(2),
+            Token::Colon,
+            Token::Integer(3),
+            Token::Semicolon,
+            Token::RightBrace,
+        ];
+
+        let program = parse(&tokens).expect("parser should accept a ternary conditional");
+
+        assert_eq!(
+            program.functions[0].body[0],
+            Statement::Return(ReturnStatement {
+                expr: Expr::Conditional(ConditionalExpr {
+                    cond: Box::new(Expr::IntegerLiteral(IntegerLiteral { value: 1 })),
+                    then_expr: Box::new(Expr::IntegerLiteral(IntegerLiteral { value: 2 })),
+                    else_expr: Box::new(Expr::IntegerLiteral(IntegerLiteral { value: 3 })),
+                }),
+            })
+        );
     }
 
     #[test]

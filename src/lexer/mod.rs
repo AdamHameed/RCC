@@ -39,6 +39,8 @@ pub enum Token {
     Exclamation,
     Ampersand,
     Comma,
+    Question,
+    Colon,
     Integer(i32),
 }
 
@@ -155,6 +157,14 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, String> {
             ';' => {
                 chars.next();
                 tokens.push(Token::Semicolon);
+            }
+            '?' => {
+                chars.next();
+                tokens.push(Token::Question);
+            }
+            ':' => {
+                chars.next();
+                tokens.push(Token::Colon);
             }
             '=' => {
                 chars.next();
