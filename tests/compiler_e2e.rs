@@ -34,6 +34,25 @@ fn evaluates_division_and_subtraction() {
 }
 
 #[test]
+fn evaluates_modulo() {
+    assert_program_exit_code("int main() { return 17 % 5; }\n", 2);
+}
+
+#[test]
+fn modulo_shares_multiplicative_precedence() {
+    // 10 % 4 * 2 groups left-to-right: (10 % 4) * 2 = 4, plus 1 = 5
+    assert_program_exit_code("int main() { return 1 + 10 % 4 * 2; }\n", 5);
+}
+
+#[test]
+fn ignores_comments() {
+    assert_program_exit_code(
+        "// leading comment\nint main() {\n    int x = 6; // set x\n    /* block\n       comment */\n    return x % 4;\n}\n",
+        2,
+    );
+}
+
+#[test]
 fn evaluates_unary_negation() {
     // -5 modulo 256 is 251
     assert_program_exit_code("int main() { return -5; }\n", 251);

@@ -542,6 +542,9 @@ fn emit_expr<'ctx>(
                     BinaryOp::Divide => builder
                         .build_int_signed_div(left, right, "divtmp")
                         .map_err(|err| format!("failed to emit div instruction: {err}"))?,
+                    BinaryOp::Modulo => builder
+                        .build_int_signed_rem(left, right, "remtmp")
+                        .map_err(|err| format!("failed to emit rem instruction: {err}"))?,
                     BinaryOp::Equal
                     | BinaryOp::NotEqual
                     | BinaryOp::LessThan

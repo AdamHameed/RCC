@@ -12,6 +12,7 @@ pub enum Token {
     Minus,
     Star,
     Slash,
+    Percent,
     LeftParen,
     RightParen,
     LeftBrace,
@@ -57,7 +58,36 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, String> {
             }
             '/' => {
                 chars.next();
-                tokens.push(Token::Slash);
+                match chars.peek() {
+                    Some(&'/') => {
+                        // Line comment: skip until end of line.
+                        for next in chars.by_ref() {
+                            if next == '\n' {
+                                break;
+                            }
+                        }
+                    }
+                    Some(&'*') => {
+                        chars.next();
+                        // Block comment: skip until the closing `*/`.
+                        let mut terminated = false;
+                        while let Some(next) = chars.next() {
+                            if next == '*' && chars.peek() == Some(&'/') {
+                                chars.next();
+                                terminated = true;
+                                break;
+                            }
+                        }
+                        if !terminated {
+                            return Err("unterminated block comment".to_string());
+                        }
+                    }
+                    _ => tokens.push(Token::Slash),
+                }
+            }
+            '%' => {
+                chars.next();
+                tokens.push(Token::Percent);
             }
             '(' => {
                 chars.next();
@@ -187,7 +217,7 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, String> {
 }
 
 // TODO: Track line and column information for better lexer errors.
-// TODO: Support comments and richer punctuation.
+// TODO: Support richer punctuation (compound assignment, increment/decrement).
 
 #[cfg(test)]
 mod tests {
@@ -287,6 +317,65 @@ mod tests {
                 Token::Semicolon,
                 Token::RightBrace,
             ]
+        );
+    }
+
+    #[test]
+    fn skips_line_comments() {
+        let source = "int main() { // this is a comment\n return 5; // trailing\n}";
+        let tokens = tokenize(source).expect("tokenization should succeed");
+
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Int,
+                Token::Identifier("main".to_string()),
+                Token::LeftParen,
+                Token::RightParen,
+                Token::LeftBrace,
+                Token::Return,
+                Token::Integer(5),
+                Token::Semicolon,
+                Token::RightBrace,
+            ]
+        );
+    }
+
+    #[test]
+    fn skips_block_comments() {
+        let source = "int main() { return /* the answer, \n spanning lines */ 5; }";
+        let tokens = tokenize(source).expect("tokenization should succeed");
+
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Int,
+                Token::Identifier("main".to_string()),
+                Token::LeftParen,
+                Token::RightParen,
+                Token::LeftBrace,
+                Token::Return,
+                Token::Integer(5),
+                Token::Semicolon,
+                Token::RightBrace,
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_unterminated_block_comment() {
+        let error = tokenize("int main() { /* never closed").expect_err("should fail");
+
+        assert!(error.contains("unterminated block comment"));
+    }
+
+    #[test]
+    fn tokenizes_percent_operator() {
+        let tokens = tokenize("7 % 3").expect("tokenization should succeed");
+
+        assert_eq!(
+            tokens,
+            vec![Token::Integer(7), Token::Percent, Token::Integer(3)]
         );
     }
 
