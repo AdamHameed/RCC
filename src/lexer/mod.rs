@@ -13,6 +13,7 @@ pub enum Token {
     LeftBrace,
     RightBrace,
     Semicolon,
+    Equals,
     Integer(i32),
 }
 
@@ -62,6 +63,10 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, String> {
             ';' => {
                 chars.next();
                 tokens.push(Token::Semicolon);
+            }
+            '=' => {
+                chars.next();
+                tokens.push(Token::Equals);
             }
             '0'..='9' => {
                 let mut number = String::new();

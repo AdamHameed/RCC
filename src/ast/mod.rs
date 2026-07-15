@@ -12,6 +12,8 @@ pub struct Function {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Statement {
     Return(ReturnStatement),
+    Declare(VarDeclareStatement),
+    Assign(VarAssignStatement),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,10 +22,28 @@ pub struct ReturnStatement {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VarDeclareStatement {
+    pub name: String,
+    pub init: Expr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VarAssignStatement {
+    pub name: String,
+    pub expr: Expr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
     IntegerLiteral(IntegerLiteral),
+    Variable(VariableExpr),
     Unary(UnaryExpr),
     Binary(BinaryExpr),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VariableExpr {
+    pub name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
