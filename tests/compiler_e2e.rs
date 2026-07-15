@@ -108,6 +108,46 @@ fn evaluates_logical_operators() {
 }
 
 #[test]
+fn evaluates_if_statement() {
+    assert_program_exit_code(
+        "int main() {\n    int x = 10;\n    if (x == 10) {\n        return 1;\n    } else {\n        return 2;\n    }\n}\n",
+        1,
+    );
+}
+
+#[test]
+fn evaluates_if_else_statement() {
+    assert_program_exit_code(
+        "int main() {\n    int x = 20;\n    if (x == 10) {\n        return 1;\n    } else {\n        return 2;\n    }\n}\n",
+        2,
+    );
+}
+
+#[test]
+fn evaluates_while_loop() {
+    assert_program_exit_code(
+        "int main() {\n    int x = 0;\n    while (x < 5) {\n        x = x + 1;\n    }\n    return x;\n}\n",
+        5,
+    );
+}
+
+#[test]
+fn evaluates_for_loop() {
+    assert_program_exit_code(
+        "int main() {\n    int sum = 0;\n    for (int i = 0; i < 5; i = i + 1) {\n        sum = sum + i;\n    }\n    return sum;\n}\n",
+        10,
+    );
+}
+
+#[test]
+fn evaluates_nested_loops_and_conditionals() {
+    assert_program_exit_code(
+        "int main() {\n    int result = 0;\n    for (int i = 0; i < 3; i = i + 1) {\n        int j = 0;\n        while (j < 2) {\n            if (i == 1) {\n                result = result + 10;\n            } else {\n                result = result + 1;\n            }\n            j = j + 1;\n        }\n    }\n    return result;\n}\n",
+        24,
+    );
+}
+
+#[test]
 fn evaluates_simple_pointer() {
     assert_program_exit_code(
         "int main() {\n    int x = 42;\n    int* p = &x;\n    return *p;\n}\n",
